@@ -120,6 +120,8 @@ contextBridge.exposeInMainWorld("describer", {
     ipcRenderer.invoke("describer:exportProject"),
   exportMarkdown: (): Promise<{ library: Library }> =>
     ipcRenderer.invoke("describer:exportMarkdown"),
+  exportPdf: (): Promise<{ library: Library }> =>
+    ipcRenderer.invoke("describer:exportPdf"),
   exportSrt: (): Promise<{ library: Library }> =>
     ipcRenderer.invoke("describer:exportSrt"),
   exportVtt: (): Promise<{ library: Library }> =>

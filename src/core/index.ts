@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { PDFDocument, StandardFonts } from "pdf-lib";
 import { onDeviceProcessor } from "./on-device-processor.js";
 
 export type Language = "French" | "English";
@@ -127,6 +128,7 @@ export type Describer = {
   deleteProject(projectId: string): Promise<void>;
   exportProject(projectId: string, destinationPath: string): Promise<void>;
   exportMarkdown(projectId: string, destinationPath: string): Promise<void>;
+  exportPdf(projectId: string, destinationPath: string): Promise<void>;
   exportSrt(projectId: string, destinationPath: string): Promise<void>;
   exportVtt(projectId: string, destinationPath: string): Promise<void>;
   importProject(projectFilePath: string): Promise<Project>;
@@ -376,6 +378,71 @@ function formatMarkdown(
     );
   }
   return `${lines.join("\n")}\n`;
+}
+
+const PDF_PAGE_WIDTH = 612;
+const PDF_PAGE_HEIGHT = 792;
+const PDF_MARGIN = 72;
+const PDF_FONT_SIZE = 12;
+const PDF_LINE_HEIGHT = 16;
+
+function wrapPdfLine(
+  text: string,
+  widthOf: (value: string) => number,
+  maxWidth: number,
+): string[] {
+  if (text.length === 0) {
+    return [""];
+  }
+  const words = text.split(" ");
+  const lines: string[] = [];
+  let current = "";
+  for (const piece of words) {
+    const next = current.length === 0 ? piece : `${current} ${piece}`;
+    if (widthOf(next) <= maxWidth) {
+      current = next;
+    } else {
+      if (current.length > 0) {
+        lines.push(current);
+      }
+      current = piece;
+    }
+  }
+  if (current.length > 0) {
+    lines.push(current);
+  }
+  return lines;
+}
+
+async function writeReadablePdf(
+  destinationPath: string,
+  body: string,
+): Promise<void> {
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const maxWidth = PDF_PAGE_WIDTH - PDF_MARGIN * 2;
+  const widthOf = (value: string): number =>
+    font.widthOfTextAtSize(value, PDF_FONT_SIZE);
+  let page = doc.addPage([PDF_PAGE_WIDTH, PDF_PAGE_HEIGHT]);
+  let y = PDF_PAGE_HEIGHT - PDF_MARGIN;
+  for (const line of body.split("\n")) {
+    for (const wrapped of wrapPdfLine(line, widthOf, maxWidth)) {
+      if (y < PDF_MARGIN) {
+        page = doc.addPage([PDF_PAGE_WIDTH, PDF_PAGE_HEIGHT]);
+        y = PDF_PAGE_HEIGHT - PDF_MARGIN;
+      }
+      if (wrapped.length > 0) {
+        page.drawText(wrapped, {
+          x: PDF_MARGIN,
+          y,
+          size: PDF_FONT_SIZE,
+          font,
+        });
+      }
+      y -= PDF_LINE_HEIGHT;
+    }
+  }
+  await writeFile(destinationPath, await doc.save());
 }
 
 function findPhraseStarts(words: readonly Word[], needle: string): Word[] {
@@ -998,6 +1065,23 @@ export async function openDescriber(
       }
       const stored = transcripts.get(project.id) ?? EMPTY_TRANSCRIPT;
       await writeFile(
+        destinationPath,
+        formatMarkdown(
+          project,
+          utterancesFrom(stored.speakers, stored.words),
+        ),
+      );
+    },
+    async exportPdf(
+      projectId: string,
+      destinationPath: string,
+    ): Promise<void> {
+      const project = projects.find((entry) => entry.id === projectId);
+      if (project === undefined) {
+        throw new Error(`Project not found: ${projectId}`);
+      }
+      const stored = transcripts.get(project.id) ?? EMPTY_TRANSCRIPT;
+      await writeReadablePdf(
         destinationPath,
         formatMarkdown(
           project,
