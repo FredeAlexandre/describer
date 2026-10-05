@@ -82,6 +82,8 @@ declare global {
       locateSource: () => Promise<{ library: LibraryView; opened: OpenedView }>;
       deleteProject: () => Promise<{ library: LibraryView; deleted: boolean }>;
       exportProject: () => Promise<{ library: LibraryView }>;
+      exportSrt: () => Promise<{ library: LibraryView }>;
+      exportVtt: () => Promise<{ library: LibraryView }>;
       importProject: () => Promise<{ library: LibraryView }>;
     };
   }
@@ -158,6 +160,16 @@ async function deleteProject(): Promise<void> {
 
 async function exportProject(): Promise<void> {
   const result = await window.describer.exportProject();
+  library = result.library;
+}
+
+async function exportSrt(): Promise<void> {
+  const result = await window.describer.exportSrt();
+  library = result.library;
+}
+
+async function exportVtt(): Promise<void> {
+  const result = await window.describer.exportVtt();
   library = result.library;
 }
 
@@ -406,6 +418,20 @@ function renderPlayer(root: HTMLElement): void {
     void exportProject();
   });
 
+  const exportSrtButton = document.createElement("button");
+  exportSrtButton.type = "button";
+  exportSrtButton.textContent = "Export SRT";
+  exportSrtButton.addEventListener("click", () => {
+    void exportSrt();
+  });
+
+  const exportVttButton = document.createElement("button");
+  exportVttButton.type = "button";
+  exportVttButton.textContent = "Export VTT";
+  exportVttButton.addEventListener("click", () => {
+    void exportVtt();
+  });
+
   const deleteButton = document.createElement("button");
   deleteButton.type = "button";
   deleteButton.textContent = "Delete";
@@ -413,7 +439,13 @@ function renderPlayer(root: HTMLElement): void {
     void deleteProject();
   });
 
-  actions.append(locateButton, exportButton, deleteButton);
+  actions.append(
+    locateButton,
+    exportButton,
+    exportSrtButton,
+    exportVttButton,
+    deleteButton,
+  );
   pane.append(actions);
 
   if (opened.sourceUrl === null) {
