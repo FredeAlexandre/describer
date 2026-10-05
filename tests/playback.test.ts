@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "vitest";
-import { openDescriber } from "../src/core/index.ts";
+import { openDescriber, fixtureProcessor } from "../src/core/index.ts";
 
 test("opening a Project plays the Source", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "describer-play-"));
@@ -10,7 +10,7 @@ test("opening a Project plays the Source", async () => {
   const sourcePath = path.join(root, "standup.mp4");
   await writeFile(sourcePath, "");
   try {
-    const describer = await openDescriber({ libraryDir, now: () => 0 });
+    const describer = await openDescriber({ libraryDir, now: () => 0, processor: fixtureProcessor() });
     const project = await describer.importSource(sourcePath, "English");
     const opened = describer.openProject(project.id);
     expect(opened.playback.playing).toBe(true);
@@ -27,7 +27,7 @@ test("a video Source has a picture when opened", async () => {
   const sourcePath = path.join(root, "standup.mp4");
   await writeFile(sourcePath, "");
   try {
-    const describer = await openDescriber({ libraryDir });
+    const describer = await openDescriber({ libraryDir, processor: fixtureProcessor() });
     const project = await describer.importSource(sourcePath, "English");
     const opened = describer.openProject(project.id);
     expect(opened.hasPicture).toBe(true);
@@ -42,7 +42,7 @@ test("an audio-only Source has no picture when opened", async () => {
   const sourcePath = path.join(root, "memo.wav");
   await writeFile(sourcePath, "");
   try {
-    const describer = await openDescriber({ libraryDir });
+    const describer = await openDescriber({ libraryDir, processor: fixtureProcessor() });
     const project = await describer.importSource(sourcePath, "English");
     const opened = describer.openProject(project.id);
     expect(opened.hasPicture).toBe(false);
@@ -58,7 +58,7 @@ test("playback current time advances at 1, 1.5, and 2", async () => {
   await writeFile(sourcePath, "");
   let now = 0;
   try {
-    const describer = await openDescriber({ libraryDir, now: () => now });
+    const describer = await openDescriber({ libraryDir, now: () => now, processor: fixtureProcessor() });
     const project = await describer.importSource(sourcePath, "English");
     const opened = describer.openProject(project.id);
     now = 1000;
@@ -82,10 +82,10 @@ test("a missing Source stays listed and playback does not start", async () => {
   const sourcePath = path.join(root, "standup.mp4");
   await writeFile(sourcePath, "");
   try {
-    const describer = await openDescriber({ libraryDir, now: () => 0 });
+    const describer = await openDescriber({ libraryDir, now: () => 0, processor: fixtureProcessor() });
     const project = await describer.importSource(sourcePath, "English");
     await rm(sourcePath);
-    const reopened = await openDescriber({ libraryDir, now: () => 0 });
+    const reopened = await openDescriber({ libraryDir, now: () => 0, processor: fixtureProcessor() });
     expect(reopened.library.projects).toEqual([project]);
     const opened = reopened.openProject(project.id);
     expect(opened.playback.playing).toBe(false);
@@ -103,7 +103,7 @@ test("editing an open Project keeps playback going", async () => {
   await writeFile(sourcePath, "");
   let now = 0;
   try {
-    const describer = await openDescriber({ libraryDir, now: () => now });
+    const describer = await openDescriber({ libraryDir, now: () => now, processor: fixtureProcessor() });
     const project = await describer.importSource(sourcePath, "English");
     const opened = describer.openProject(project.id);
     now = 1000;

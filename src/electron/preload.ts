@@ -4,6 +4,7 @@ import type {
   Library,
   Playback,
   PlaybackRate,
+  Processing,
   Project,
 } from "../core/index.js";
 
@@ -19,6 +20,17 @@ contextBridge.exposeInMainWorld("describer", {
     ipcRenderer.invoke("describer:open"),
   importSource: (language: Language): Promise<{ library: Library }> =>
     ipcRenderer.invoke("describer:importSource", language),
+  cancelProcessing: (): Promise<void> =>
+    ipcRenderer.invoke("describer:cancelProcessing"),
+  onProcessing: (listener: (processing: Processing | null) => void): (() => void) => {
+    const handler = (_event: unknown, processing: Processing | null): void => {
+      listener(processing);
+    };
+    ipcRenderer.on("describer:processing", handler);
+    return () => {
+      ipcRenderer.removeListener("describer:processing", handler);
+    };
+  },
   openProject: (projectId: string): Promise<OpenedView> =>
     ipcRenderer.invoke("describer:openProject", projectId),
   play: (): Promise<boolean> => ipcRenderer.invoke("describer:play"),

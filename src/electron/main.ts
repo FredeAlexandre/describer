@@ -83,10 +83,27 @@ ipcMain.handle(
     if (picked.canceled || sourcePath === undefined) {
       return { library: current.library };
     }
-    await current.importSource(sourcePath, language);
+    const target = window;
+    const sendProgress = (): void => {
+      target.webContents.send("describer:processing", current.processing);
+    };
+    const timer = setInterval(sendProgress, 100);
+    sendProgress();
+    try {
+      await current.importSource(sourcePath, language);
+    } catch {
+      // Cancel or failure leaves no Project; the Library is returned as-is.
+    } finally {
+      clearInterval(timer);
+      sendProgress();
+    }
     return { library: current.library };
   },
 );
+
+ipcMain.handle("describer:cancelProcessing", () => {
+  requireDescriber().cancelProcessing();
+});
 
 ipcMain.handle("describer:openProject", (_event, projectId: string) => {
   opened = requireDescriber().openProject(projectId);

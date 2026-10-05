@@ -3,8 +3,35 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { onDeviceProcessor } from "./on-device-processor.js";
 
 export type Language = "French" | "English";
+
+export type Word = {
+  readonly text: string;
+  readonly start: number;
+  readonly end: number;
+};
+
+export type Transcript = {
+  readonly language: Language;
+  readonly words: readonly Word[];
+};
+
+export type ProcessorJob = {
+  readonly sourcePath: string;
+  readonly language: Language;
+  readonly signal: AbortSignal;
+  readonly onProgress: (progress: number) => void;
+};
+
+export type Processor = {
+  process(job: ProcessorJob): Promise<Transcript>;
+};
+
+export type Processing = {
+  readonly progress: number;
+};
 
 export type Project = {
   readonly id: string;
@@ -12,6 +39,7 @@ export type Project = {
   readonly recordedAt: Date;
   readonly language: Language;
   readonly sourcePath: string;
+  readonly transcript: Transcript;
 };
 
 export type Library = {
@@ -38,7 +66,9 @@ export type OpenedProject = {
 
 export type Describer = {
   readonly library: Library;
+  readonly processing: Processing | null;
   importSource(sourcePath: string, language?: Language): Promise<Project>;
+  cancelProcessing(): void;
   updateProject(
     projectId: string,
     patch: {
@@ -53,6 +83,7 @@ export type Describer = {
 export type OpenDescriberOptions = {
   readonly libraryDir?: string;
   readonly now?: () => number;
+  readonly processor?: Processor;
 };
 
 type StoredLibrary = {
@@ -63,8 +94,25 @@ type StoredLibrary = {
     readonly recordedAt: string;
     readonly language: Language;
     readonly sourcePath: string;
+    readonly transcript?: Transcript;
   }>;
 };
+
+function emptyTranscript(language: Language): Transcript {
+  return { language, words: [] };
+}
+
+export function fixtureProcessor(words: readonly Word[] = []): Processor {
+  return {
+    async process({ language, onProgress, signal }) {
+      if (signal.aborted) {
+        throw new Error("Processing cancelled");
+      }
+      onProgress(1);
+      return { language, words };
+    },
+  };
+}
 
 const VIDEO_EXTENSIONS = new Set([
   ".mp4",
@@ -153,6 +201,7 @@ async function loadLibrary(libraryDir: string): Promise<{
         recordedAt: new Date(project.recordedAt),
         language: project.language,
         sourcePath: project.sourcePath,
+        transcript: project.transcript ?? emptyTranscript(project.language),
       })),
     };
   } catch (error) {
@@ -173,6 +222,9 @@ export async function openDescriber(
   const projects: Project[] = loaded.projects;
   let lastUsedLanguage: Language = loaded.lastUsedLanguage;
   const now = options.now ?? Date.now;
+  const processor = options.processor ?? onDeviceProcessor();
+  let processing: Processing | null = null;
+  let activeImport: AbortController | undefined;
 
   async function persist(): Promise<void> {
     const stored: StoredLibrary = {
@@ -183,6 +235,7 @@ export async function openDescriber(
         recordedAt: project.recordedAt.toISOString(),
         language: project.language,
         sourcePath: project.sourcePath,
+        transcript: project.transcript,
       })),
     };
     await writeFile(libraryFile(libraryDir), `${JSON.stringify(stored, null, 2)}\n`);
@@ -196,22 +249,50 @@ export async function openDescriber(
         lastUsedLanguage,
       };
     },
+    get processing(): Processing | null {
+      return processing;
+    },
+    cancelProcessing(): void {
+      activeImport?.abort();
+    },
     async importSource(
       sourcePath: string,
       language: Language = lastUsedLanguage,
     ): Promise<Project> {
       const sourceStat = await stat(sourcePath);
-      const project: Project = {
-        id: randomUUID(),
-        title: path.basename(sourcePath),
-        recordedAt: sourceStat.mtime,
-        language,
-        sourcePath,
-      };
-      projects.push(project);
-      lastUsedLanguage = language;
-      await persist();
-      return project;
+      const controller = new AbortController();
+      activeImport = controller;
+      processing = { progress: 0 };
+      try {
+        const transcript = await processor.process({
+          sourcePath,
+          language,
+          signal: controller.signal,
+          onProgress: (progress) => {
+            processing = { progress };
+          },
+        });
+        if (controller.signal.aborted) {
+          throw new Error("Processing cancelled");
+        }
+        const project: Project = {
+          id: randomUUID(),
+          title: path.basename(sourcePath),
+          recordedAt: sourceStat.mtime,
+          language,
+          sourcePath,
+          transcript,
+        };
+        projects.push(project);
+        lastUsedLanguage = language;
+        await persist();
+        return project;
+      } finally {
+        processing = null;
+        if (activeImport === controller) {
+          activeImport = undefined;
+        }
+      }
     },
     async updateProject(
       projectId: string,
@@ -235,6 +316,7 @@ export async function openDescriber(
         recordedAt: patch.recordedAt ?? current.recordedAt,
         language: patch.language ?? current.language,
         sourcePath: current.sourcePath,
+        transcript: current.transcript,
       };
       projects[index] = updated;
       await persist();
