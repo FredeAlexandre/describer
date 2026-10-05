@@ -1,6 +1,8 @@
 type Language = "French" | "English";
 type PlaybackRate = 1 | 1.5 | 2;
 
+type WordPlacement = "before" | "after";
+
 type ProjectView = {
   readonly id: string;
   readonly title: string;
@@ -76,6 +78,16 @@ declare global {
       play: () => Promise<boolean>;
       setRate: (rate: PlaybackRate) => Promise<PlaybackView>;
       seekToWord: (wordId: string) => Promise<OpenedView>;
+      changeWordText: (wordId: string, text: string) => Promise<OpenedView>;
+      deleteWord: (wordId: string) => Promise<OpenedView>;
+      insertWord: (
+        neighborId: string,
+        text: string,
+        placement: WordPlacement,
+      ) => Promise<OpenedView & { inserted: WordView }>;
+      insertParagraphBreak: (wordId: string) => Promise<OpenedView>;
+      undo: () => Promise<OpenedView>;
+      redo: () => Promise<OpenedView>;
       updateProject: (
         projectId: string,
         patch: {
@@ -244,6 +256,112 @@ async function seekToWord(wordId: string): Promise<void> {
     media.currentTime = word.start;
   }
   highlightCurrentWord(word?.start ?? opened.playback.currentTime);
+}
+
+function allWords(transcript: TranscriptView): WordView[] {
+  return transcript.utterances.flatMap((utterance) => [...utterance.words]);
+}
+
+function nextWordId(
+  transcript: TranscriptView,
+  wordId: string,
+): string | undefined {
+  const words = allWords(transcript);
+  const index = words.findIndex((entry) => entry.id === wordId);
+  return words[index + 1]?.id;
+}
+
+function tokensFrom(raw: string): string[] {
+  return raw.trim().split(/\s+/).filter((token) => token.length > 0);
+}
+
+let rendering = false;
+
+async function flushWord(wordId: string, raw: string): Promise<boolean> {
+  if (opened === undefined) {
+    return false;
+  }
+  const existing = wordById(opened.transcript, wordId);
+  if (existing === undefined) {
+    return false;
+  }
+  const tokens = tokensFrom(raw);
+  if (tokens.length === 0) {
+    opened = await window.describer.deleteWord(wordId);
+    return true;
+  }
+  const first = tokens[0];
+  if (first === undefined) {
+    return false;
+  }
+  const extras = tokens.slice(1);
+  if (extras.length === 0 && first === existing.text) {
+    return false;
+  }
+  opened = await window.describer.changeWordText(wordId, first);
+  let neighborId = wordId;
+  for (const extra of extras) {
+    const result = await window.describer.insertWord(
+      neighborId,
+      extra,
+      "after",
+    );
+    opened = result;
+    neighborId = result.inserted.id;
+  }
+  return true;
+}
+
+async function flushActiveWord(): Promise<void> {
+  const active = document.activeElement;
+  if (
+    !(active instanceof HTMLElement) ||
+    active.dataset.wordId === undefined
+  ) {
+    return;
+  }
+  await flushWord(active.dataset.wordId, active.textContent ?? "");
+}
+
+async function undoTranscript(): Promise<void> {
+  if (opened === undefined) {
+    return;
+  }
+  await flushActiveWord();
+  opened = await window.describer.undo();
+  render();
+}
+
+async function redoTranscript(): Promise<void> {
+  if (opened === undefined) {
+    return;
+  }
+  await flushActiveWord();
+  opened = await window.describer.redo();
+  render();
+}
+
+async function commitWord(wordId: string, raw: string): Promise<void> {
+  if (rendering) {
+    return;
+  }
+  if (await flushWord(wordId, raw)) {
+    render();
+  }
+}
+
+async function breakParagraph(wordId: string, raw: string): Promise<void> {
+  await flushWord(wordId, raw);
+  if (opened === undefined) {
+    return;
+  }
+  if (wordById(opened.transcript, wordId) !== undefined) {
+    const nextId = nextWordId(opened.transcript, wordId);
+    if (nextId !== undefined) {
+      opened = await window.describer.insertParagraphBreak(nextId);
+    }
+  }
+  render();
 }
 
 function wordById(
@@ -633,6 +751,19 @@ function renderTranscript(root: HTMLElement): void {
       token.className = "word";
       token.dataset.wordId = word.id;
       token.textContent = word.text;
+      if (opened.transcript.editable) {
+        token.contentEditable = "true";
+        token.spellcheck = false;
+        token.addEventListener("blur", () => {
+          void commitWord(word.id, token.textContent ?? "");
+        });
+        token.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            void breakParagraph(word.id, token.textContent ?? "");
+          }
+        });
+      }
       text.append(token);
     }
     block.append(speaker, text);
@@ -666,17 +797,43 @@ function render(): void {
   if (root === null) {
     return;
   }
-  root.replaceChildren();
-  renderLibraryList(root);
-  if (opened === undefined) {
-    return;
+  rendering = true;
+  try {
+    root.replaceChildren();
+    renderLibraryList(root);
+    if (opened === undefined) {
+      return;
+    }
+    const editor = document.createElement("div");
+    editor.className = "editor";
+    editor.addEventListener("keydown", (event) => {
+      if (!(event.ctrlKey || event.metaKey)) {
+        return;
+      }
+      if (event.key !== "z" && event.key !== "y") {
+        return;
+      }
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLSelectElement
+      ) {
+        return;
+      }
+      event.preventDefault();
+      if (event.key === "y" || event.shiftKey) {
+        void redoTranscript();
+      } else {
+        void undoTranscript();
+      }
+    });
+    renderPlayer(editor);
+    renderTranscript(editor);
+    root.append(editor);
+    highlightCurrentWord(opened.playback.currentTime);
+  } finally {
+    rendering = false;
   }
-  const editor = document.createElement("div");
-  editor.className = "editor";
-  renderPlayer(editor);
-  renderTranscript(editor);
-  root.append(editor);
-  highlightCurrentWord(opened.playback.currentTime);
 }
 
 const started = await window.describer.open();

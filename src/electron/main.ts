@@ -8,6 +8,8 @@ import {
   type Language,
   type OpenedProject,
   type PlaybackRate,
+  type Word,
+  type WordPlacement,
 } from "../core/index.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -230,6 +232,23 @@ ipcMain.handle("describer:findInTranscript", (_event, query: string) => {
   return opened.findInTranscript(query);
 });
 
+function requireOpened(): OpenedProject {
+  if (opened === undefined) {
+    throw new Error("No Project is open");
+  }
+  return opened;
+}
+
+function wordById(openedProject: OpenedProject, wordId: string): Word {
+  for (const utterance of openedProject.transcript.utterances) {
+    const word = utterance.words.find((entry) => entry.id === wordId);
+    if (word !== undefined) {
+      return word;
+    }
+  }
+  throw new Error(`Word not found: ${wordId}`);
+}
+
 ipcMain.handle("describer:openProject", (_event, projectId: string) => {
   opened = requireDescriber().openProject(projectId);
   return openedSnapshot();
@@ -251,16 +270,60 @@ ipcMain.handle("describer:setRate", (_event, rate: PlaybackRate) => {
 });
 
 ipcMain.handle("describer:seekToWord", (_event, wordId: string) => {
-  if (opened === undefined) {
-    throw new Error("No Project is open");
-  }
-  for (const utterance of opened.transcript.utterances) {
-    const word = utterance.words.find((entry) => entry.id === wordId);
-    if (word !== undefined) {
-      opened.seekToWord(word);
-      break;
-    }
-  }
+  const current = requireOpened();
+  current.seekToWord(wordById(current, wordId));
+  return openedSnapshot();
+});
+
+ipcMain.handle(
+  "describer:changeWordText",
+  async (_event, wordId: string, text: string) => {
+    const current = requireOpened();
+    await current.changeWordText(wordById(current, wordId), text);
+    return openedSnapshot();
+  },
+);
+
+ipcMain.handle("describer:deleteWord", async (_event, wordId: string) => {
+  const current = requireOpened();
+  await current.deleteWord(wordById(current, wordId));
+  return openedSnapshot();
+});
+
+ipcMain.handle(
+  "describer:insertWord",
+  async (
+    _event,
+    neighborId: string,
+    text: string,
+    placement: WordPlacement,
+  ) => {
+    const current = requireOpened();
+    const inserted = await current.insertWord(
+      wordById(current, neighborId),
+      text,
+      placement,
+    );
+    return { ...openedSnapshot(), inserted };
+  },
+);
+
+ipcMain.handle(
+  "describer:insertParagraphBreak",
+  async (_event, wordId: string) => {
+    const current = requireOpened();
+    await current.insertParagraphBreak(wordById(current, wordId));
+    return openedSnapshot();
+  },
+);
+
+ipcMain.handle("describer:undo", async () => {
+  await requireOpened().undo();
+  return openedSnapshot();
+});
+
+ipcMain.handle("describer:redo", async () => {
+  await requireOpened().redo();
   return openedSnapshot();
 });
 
