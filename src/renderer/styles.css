@@ -11,6 +11,21 @@ body {
   padding: 0 1.5rem;
 }
 
+#app:has(.editor) {
+  max-width: 80rem;
+  display: grid;
+  grid-template-columns: 16rem minmax(0, 1fr);
+  gap: 1.5rem;
+  align-items: start;
+}
+
+.editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1.5rem;
+  align-items: start;
+}
+
 h1 {
   font-size: 1.5rem;
   font-weight: 600;
@@ -78,4 +93,31 @@ video,
 
 audio {
   width: 100%;
+}
+
+.transcript {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.utterance {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.speaker {
+  margin: 0;
+  color: #bbb;
+  font-size: 0.85rem;
+}
+
+.utterance-text {
+  margin: 0;
+  line-height: 1.6;
+}
+
+.word.current {
+  background: #444;
+  border-radius: 0.15rem;
 }

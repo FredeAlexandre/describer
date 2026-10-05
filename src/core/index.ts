@@ -28,12 +28,39 @@ export type Playback = {
   readonly rate: PlaybackRate;
 };
 
+export type Speaker = {
+  readonly id: string;
+  readonly name: string;
+};
+
+export type Word = {
+  readonly id: string;
+  readonly text: string;
+  readonly start: number;
+  readonly end: number;
+  readonly speakerId: string;
+  readonly paragraphBreakBefore?: boolean;
+};
+
+export type Utterance = {
+  readonly speaker: Speaker;
+  readonly words: readonly Word[];
+};
+
+export type Transcript = {
+  readonly utterances: readonly Utterance[];
+  readonly editable: boolean;
+};
+
 export type OpenedProject = {
   readonly project: Project;
   readonly playback: Playback;
   readonly hasPicture: boolean;
+  readonly transcript: Transcript;
+  readonly currentWord: Word | undefined;
   setRate(rate: PlaybackRate): void;
   play(): boolean;
+  seekToWord(word: Word): void;
 };
 
 export type Describer = {
@@ -54,9 +81,19 @@ export type Describer = {
   openProject(projectId: string): OpenedProject;
 };
 
+export type ProcessorResult = {
+  readonly speakers: readonly Speaker[];
+  readonly words: readonly Word[];
+};
+
+export type Processor = {
+  process(sourcePath: string, language: Language): Promise<ProcessorResult>;
+};
+
 export type OpenDescriberOptions = {
   readonly libraryDir?: string;
   readonly now?: () => number;
+  readonly processor?: Processor;
 };
 
 type StoredProject = {
@@ -65,12 +102,21 @@ type StoredProject = {
   readonly recordedAt: string;
   readonly language: Language;
   readonly sourcePath: string;
+  readonly speakers?: readonly Speaker[];
+  readonly words?: readonly Word[];
 };
 
 type StoredLibrary = {
   readonly lastUsedLanguage: Language;
   readonly projects: ReadonlyArray<StoredProject>;
 };
+
+type StoredTranscript = {
+  readonly speakers: readonly Speaker[];
+  readonly words: readonly Word[];
+};
+
+const EMPTY_TRANSCRIPT: StoredTranscript = { speakers: [], words: [] };
 
 const VIDEO_EXTENSIONS = new Set([
   ".mp4",
@@ -82,6 +128,44 @@ const VIDEO_EXTENSIONS = new Set([
 
 function sourceHasPicture(sourcePath: string): boolean {
   return VIDEO_EXTENSIONS.has(path.extname(sourcePath).toLowerCase());
+}
+
+const emptyProcessor: Processor = {
+  async process() {
+    return { speakers: [], words: [] };
+  },
+};
+
+const LONG_PAUSE_SECONDS = 2;
+
+function utterancesFrom(
+  speakers: readonly Speaker[],
+  words: readonly Word[],
+): Utterance[] {
+  const byId = new Map(speakers.map((speaker) => [speaker.id, speaker]));
+  const utterances: Array<{ speaker: Speaker; words: Word[] }> = [];
+  for (const word of words) {
+    const speaker = byId.get(word.speakerId);
+    if (speaker === undefined) {
+      throw new Error(`Unknown Speaker: ${word.speakerId}`);
+    }
+    const current = utterances[utterances.length - 1];
+    const previous = current?.words[current.words.length - 1];
+    const longPause =
+      previous !== undefined &&
+      word.start - previous.end >= LONG_PAUSE_SECONDS;
+    if (
+      current === undefined ||
+      current.speaker.id !== speaker.id ||
+      longPause ||
+      word.paragraphBreakBefore === true
+    ) {
+      utterances.push({ speaker, words: [word] });
+    } else {
+      current.words.push(word);
+    }
+  }
+  return utterances;
 }
 
 class PlaybackCursor {
@@ -122,6 +206,13 @@ class PlaybackCursor {
     }
     this.rate = rate;
   }
+
+  seek(time: number): void {
+    this.originTime = time;
+    if (this.playing) {
+      this.originMs = this.now();
+    }
+  }
 }
 
 function defaultLibraryDir(): string {
@@ -144,34 +235,69 @@ function isMissingFile(error: unknown): boolean {
   );
 }
 
-function toStoredProject(project: Project): StoredProject {
+function toStoredProject(
+  project: Project,
+  transcript: StoredTranscript = EMPTY_TRANSCRIPT,
+): StoredProject {
   return {
-    ...project,
+    id: project.id,
+    title: project.title,
     recordedAt: project.recordedAt.toISOString(),
+    language: project.language,
+    sourcePath: project.sourcePath,
+    speakers: transcript.speakers,
+    words: transcript.words,
   };
 }
 
 function fromStoredProject(project: StoredProject): Project {
   return {
-    ...project,
+    id: project.id,
+    title: project.title,
     recordedAt: new Date(project.recordedAt),
+    language: project.language,
+    sourcePath: project.sourcePath,
+  };
+}
+
+function transcriptFromStored(project: StoredProject): StoredTranscript {
+  return {
+    speakers: project.speakers ?? [],
+    words: (project.words ?? []).map((word) => ({
+      ...word,
+      paragraphBreakBefore: word.paragraphBreakBefore === true,
+    })),
   };
 }
 
 async function loadLibrary(libraryDir: string): Promise<{
   lastUsedLanguage: Language;
   projects: Project[];
+  transcripts: Map<
+    string,
+    { speakers: readonly Speaker[]; words: readonly Word[] }
+  >;
 }> {
   try {
     const raw = await readFile(libraryFile(libraryDir), "utf8");
     const stored = JSON.parse(raw) as StoredLibrary;
+    const transcripts = new Map<string, StoredTranscript>();
+    const projects = stored.projects.map((project) => {
+      transcripts.set(project.id, transcriptFromStored(project));
+      return fromStoredProject(project);
+    });
     return {
       lastUsedLanguage: stored.lastUsedLanguage,
-      projects: stored.projects.map(fromStoredProject),
+      projects,
+      transcripts,
     };
   } catch (error) {
     if (isMissingFile(error)) {
-      return { lastUsedLanguage: "English", projects: [] };
+      return {
+        lastUsedLanguage: "English",
+        projects: [],
+        transcripts: new Map(),
+      };
     }
     throw error;
   }
@@ -185,13 +311,17 @@ export async function openDescriber(
 
   const loaded = await loadLibrary(libraryDir);
   const projects: Project[] = loaded.projects;
+  const transcripts = loaded.transcripts;
   let lastUsedLanguage: Language = loaded.lastUsedLanguage;
   const now = options.now ?? Date.now;
+  const processor = options.processor ?? emptyProcessor;
 
   async function persist(): Promise<void> {
     const stored: StoredLibrary = {
       lastUsedLanguage,
-      projects: projects.map(toStoredProject),
+      projects: projects.map((project) =>
+        toStoredProject(project, transcripts.get(project.id) ?? EMPTY_TRANSCRIPT),
+      ),
     };
     await writeFile(libraryFile(libraryDir), `${JSON.stringify(stored, null, 2)}\n`);
   }
@@ -209,6 +339,8 @@ export async function openDescriber(
       language: Language = lastUsedLanguage,
     ): Promise<Project> {
       const sourceStat = await stat(sourcePath);
+      const processed = await processor.process(sourcePath, language);
+      utterancesFrom(processed.speakers, processed.words);
       const project: Project = {
         id: randomUUID(),
         title: path.basename(sourcePath),
@@ -217,6 +349,17 @@ export async function openDescriber(
         sourcePath,
       };
       projects.push(project);
+      transcripts.set(project.id, {
+        speakers: processed.speakers,
+        words: processed.words.map((word) => ({
+          id: word.id,
+          text: word.text,
+          start: word.start,
+          end: word.end,
+          speakerId: word.speakerId,
+          paragraphBreakBefore: word.paragraphBreakBefore === true,
+        })),
+      });
       lastUsedLanguage = language;
       await persist();
       return project;
@@ -274,6 +417,7 @@ export async function openDescriber(
         throw new Error(`Project not found: ${projectId}`);
       }
       projects.splice(index, 1);
+      transcripts.delete(projectId);
       await persist();
     },
     async exportProject(
@@ -286,7 +430,14 @@ export async function openDescriber(
       }
       await writeFile(
         destinationPath,
-        `${JSON.stringify(toStoredProject(project), null, 2)}\n`,
+        `${JSON.stringify(
+          toStoredProject(
+            project,
+            transcripts.get(project.id) ?? EMPTY_TRANSCRIPT,
+          ),
+          null,
+          2,
+        )}\n`,
       );
     },
     async importProject(projectFilePath: string): Promise<Project> {
@@ -297,6 +448,7 @@ export async function openDescriber(
         id: randomUUID(),
       };
       projects.push(project);
+      transcripts.set(project.id, transcriptFromStored(stored));
       await persist();
       return project;
     },
@@ -307,6 +459,10 @@ export async function openDescriber(
       }
       const cursor = new PlaybackCursor(now);
       const sourcePresent = existsSync(project.sourcePath);
+      const stored = transcripts.get(projectId) ?? {
+        speakers: [],
+        words: [],
+      };
       if (sourcePresent) {
         cursor.play();
       }
@@ -328,6 +484,18 @@ export async function openDescriber(
         get playback(): Playback {
           return cursor.snapshot;
         },
+        get transcript(): Transcript {
+          return {
+            utterances: utterancesFrom(stored.speakers, stored.words),
+            editable: true,
+          };
+        },
+        get currentWord(): Word | undefined {
+          const time = cursor.currentTime;
+          return stored.words.find(
+            (word) => word.start <= time && time < word.end,
+          );
+        },
         setRate(rate: PlaybackRate): void {
           cursor.setRate(rate);
         },
@@ -338,6 +506,9 @@ export async function openDescriber(
           }
           cursor.play();
           return true;
+        },
+        seekToWord(word: Word): void {
+          cursor.seek(word.start);
         },
       };
     },

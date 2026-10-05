@@ -21,11 +21,37 @@ type PlaybackView = {
   readonly rate: PlaybackRate;
 };
 
+type WordView = {
+  readonly id: string;
+  readonly text: string;
+  readonly start: number;
+  readonly end: number;
+  readonly speakerId: string;
+  readonly paragraphBreakBefore: boolean;
+};
+
+type SpeakerView = {
+  readonly id: string;
+  readonly name: string;
+};
+
+type UtteranceView = {
+  readonly speaker: SpeakerView;
+  readonly words: readonly WordView[];
+};
+
+type TranscriptView = {
+  readonly utterances: readonly UtteranceView[];
+  readonly editable: boolean;
+};
+
 type OpenedView = {
   readonly project: ProjectView;
   readonly hasPicture: boolean;
   readonly playback: PlaybackView;
   readonly sourceUrl: string | null;
+  readonly transcript: TranscriptView;
+  readonly currentWord: WordView | null;
 };
 
 declare global {
@@ -36,6 +62,7 @@ declare global {
       openProject: (projectId: string) => Promise<OpenedView>;
       play: () => Promise<boolean>;
       setRate: (rate: PlaybackRate) => Promise<PlaybackView>;
+      seekToWord: (wordId: string) => Promise<OpenedView>;
       updateProject: (
         projectId: string,
         patch: {
@@ -132,6 +159,67 @@ async function openProject(projectId: string): Promise<void> {
   if (media !== null) {
     media.playbackRate = opened.playback.rate;
     void media.play();
+    highlightCurrentWord(media.currentTime);
+    media.addEventListener("timeupdate", () => {
+      highlightCurrentWord(media.currentTime);
+    });
+  }
+}
+
+async function seekToWord(wordId: string): Promise<void> {
+  if (opened === undefined) {
+    return;
+  }
+  opened = await window.describer.seekToWord(wordId);
+  const word = wordById(opened.transcript, wordId);
+  const media = mediaElement();
+  if (media !== null && word !== undefined) {
+    media.currentTime = word.start;
+  }
+  highlightCurrentWord(word?.start ?? opened.playback.currentTime);
+}
+
+function wordById(
+  transcript: TranscriptView,
+  wordId: string,
+): WordView | undefined {
+  for (const utterance of transcript.utterances) {
+    const word = utterance.words.find((entry) => entry.id === wordId);
+    if (word !== undefined) {
+      return word;
+    }
+  }
+  return undefined;
+}
+
+function wordAtTime(
+  transcript: TranscriptView,
+  time: number,
+): WordView | undefined {
+  for (const utterance of transcript.utterances) {
+    const word = utterance.words.find(
+      (entry) => entry.start <= time && time < entry.end,
+    );
+    if (word !== undefined) {
+      return word;
+    }
+  }
+  return undefined;
+}
+
+function highlightCurrentWord(time: number): void {
+  if (opened === undefined) {
+    return;
+  }
+  const current = wordAtTime(opened.transcript, time);
+  for (const element of document.querySelectorAll(".word")) {
+    const isCurrent = element.getAttribute("data-word-id") === current?.id;
+    element.classList.toggle("current", isCurrent);
+    if (isCurrent) {
+      element.setAttribute("aria-current", "true");
+    } else {
+      element.removeAttribute("aria-current");
+    }
   }
 }
 
@@ -347,6 +435,71 @@ function renderPlayer(root: HTMLElement): void {
   root.append(pane);
 }
 
+function renderTranscript(root: HTMLElement): void {
+  if (opened === undefined) {
+    return;
+  }
+
+  const pane = document.createElement("section");
+  pane.className = "transcript";
+  pane.setAttribute("aria-label", "Transcript");
+  if (!opened.transcript.editable) {
+    pane.setAttribute("aria-readonly", "true");
+  }
+
+  if (opened.transcript.utterances.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = "No Words.";
+    pane.append(empty);
+    root.append(pane);
+    return;
+  }
+
+  for (const utterance of opened.transcript.utterances) {
+    const block = document.createElement("article");
+    block.className = "utterance";
+    const speaker = document.createElement("p");
+    speaker.className = "speaker";
+    speaker.textContent = utterance.speaker.name;
+    const text = document.createElement("p");
+    text.className = "utterance-text";
+    for (const [index, word] of utterance.words.entries()) {
+      if (index > 0) {
+        text.append(" ");
+      }
+      const token = document.createElement("span");
+      token.className = "word";
+      token.dataset.wordId = word.id;
+      token.textContent = word.text;
+      text.append(token);
+    }
+    block.append(speaker, text);
+    pane.append(block);
+  }
+
+  pane.addEventListener("mouseup", (event) => {
+    const selection = window.getSelection();
+    if (selection !== null && !selection.isCollapsed) {
+      for (const element of pane.querySelectorAll(".word")) {
+        if (selection.containsNode(element, true)) {
+          const wordId = element.getAttribute("data-word-id");
+          if (wordId !== null) {
+            void seekToWord(wordId);
+          }
+          return;
+        }
+      }
+    }
+    const target = event.target;
+    if (target instanceof HTMLElement && target.dataset.wordId !== undefined) {
+      void seekToWord(target.dataset.wordId);
+    }
+  });
+
+  root.append(pane);
+}
+
 function render(): void {
   const root = document.getElementById("app");
   if (root === null) {
@@ -354,7 +507,15 @@ function render(): void {
   }
   root.replaceChildren();
   renderLibraryList(root);
-  renderPlayer(root);
+  if (opened === undefined) {
+    return;
+  }
+  const editor = document.createElement("div");
+  editor.className = "editor";
+  renderPlayer(editor);
+  renderTranscript(editor);
+  root.append(editor);
+  highlightCurrentWord(opened.playback.currentTime);
 }
 
 const started = await window.describer.open();
