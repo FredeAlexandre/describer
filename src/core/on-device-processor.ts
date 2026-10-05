@@ -13,6 +13,7 @@ import type {
   ProcessorControls,
   ProcessorResult,
   Speaker,
+  SpeakerEmbedding,
   Word,
 } from "./index.js";
 
@@ -182,7 +183,10 @@ function wordsFromOutput(output: {
   return [{ id: "w1", text, start: 0, end: 0, speakerId: "speaker-1" }];
 }
 
-function resultFromWords(words: Word[]): ProcessorResult {
+function resultFromWords(
+  words: Word[],
+  embeddings: readonly SpeakerEmbedding[] = [],
+): ProcessorResult {
   const speakers: Speaker[] = [];
   const seen = new Set<string>();
   for (const word of words) {
@@ -195,7 +199,7 @@ function resultFromWords(words: Word[]): ProcessorResult {
       name: `Speaker ${speakers.length + 1}`,
     });
   }
-  return { speakers, words };
+  return { speakers, words, embeddings };
 }
 
 function rms(samples: Float32Array): number {
@@ -453,10 +457,10 @@ async function transcribeAndDiarize(
   language: Language,
   signal: AbortSignal,
   onProgress: (progress: number) => void,
-): Promise<Word[]> {
+): Promise<{ words: Word[]; embeddings: SpeakerEmbedding[] }> {
   const regions = speechRegions(audio);
   if (regions.length === 0) {
-    return [];
+    return { words: [], embeddings: [] };
   }
   const transcriber = await loadTranscriber(onProgress);
   throwIfAborted(signal);
@@ -486,13 +490,26 @@ async function transcribeAndDiarize(
   }
   const labels = clusterByCentroid(vectors, SAME_SPEAKER_COSINE);
   const words: Word[] = [];
+  const vectorsBySpeaker = new Map<string, number[][]>();
   for (const [index, region] of regions.entries()) {
     const speakerId = `speaker-${(labels[index] ?? 0) + 1}`;
+    const vector = vectors[index];
+    if (vector !== undefined) {
+      const list = vectorsBySpeaker.get(speakerId) ?? [];
+      list.push(vector);
+      vectorsBySpeaker.set(speakerId, list);
+    }
     words.push(
       ...offsetWords(regionWords[index] ?? [], region, speakerId, words.length + 1),
     );
   }
-  return words;
+  const embeddings: SpeakerEmbedding[] = [...vectorsBySpeaker.entries()].map(
+    ([speakerId, speakerVectors]) => ({
+      speakerId,
+      embedding: l2normalize(meanVectors(speakerVectors)),
+    }),
+  );
+  return { words, embeddings };
 }
 
 export function onDeviceProcessor(): Processor {
@@ -505,14 +522,14 @@ export function onDeviceProcessor(): Processor {
       const audio = await decodeSourceAudio(sourcePath, signal);
       throwIfAborted(signal);
       onProgress(0.2);
-      const words = await transcribeAndDiarize(
+      const { words, embeddings } = await transcribeAndDiarize(
         audio,
         language,
         signal,
         onProgress,
       );
       onProgress(1);
-      return resultFromWords(words);
+      return resultFromWords(words, embeddings);
     },
   };
 }

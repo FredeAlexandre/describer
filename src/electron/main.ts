@@ -462,6 +462,15 @@ ipcMain.handle(
   },
 );
 
+ipcMain.handle(
+  "describer:acceptSpeakerSuggestion",
+  async (_event, speakerId: string) => {
+    const current = requireOpened();
+    await current.acceptSpeakerSuggestion(speakerById(current, speakerId));
+    return openedSnapshot();
+  },
+);
+
 ipcMain.handle("describer:undo", async () => {
   await requireOpened().undo();
   return openedSnapshot();

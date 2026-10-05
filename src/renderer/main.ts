@@ -41,6 +41,11 @@ type SpeakerView = {
   readonly name: string;
 };
 
+type SpeakerSuggestionView = {
+  readonly speaker: SpeakerView;
+  readonly suggestedName: string;
+};
+
 type UtteranceView = {
   readonly speaker: SpeakerView;
   readonly words: readonly WordView[];
@@ -50,6 +55,7 @@ type TranscriptView = {
   readonly utterances: readonly UtteranceView[];
   readonly editable: boolean;
   readonly speakers: readonly SpeakerView[];
+  readonly speakerSuggestions: readonly SpeakerSuggestionView[];
 };
 
 type OpenedView = {
@@ -106,6 +112,7 @@ declare global {
         wordIds: readonly string[],
         speaker: SpeakerView,
       ) => Promise<OpenedView>;
+      acceptSpeakerSuggestion: (speakerId: string) => Promise<OpenedView>;
       undo: () => Promise<OpenedView>;
       redo: () => Promise<OpenedView>;
       updateProject: (
@@ -458,6 +465,14 @@ async function commitSpeakerName(
   if (await renameIfChanged(speakerId, name)) {
     render();
   }
+}
+
+async function acceptSuggestion(speakerId: string): Promise<void> {
+  if (opened === undefined) {
+    return;
+  }
+  opened = await window.describer.acceptSpeakerSuggestion(speakerId);
+  render();
 }
 
 async function undoTranscript(): Promise<void> {
@@ -1003,6 +1018,25 @@ function renderTranscript(root: HTMLElement): void {
       });
     }
     heading.append(speaker);
+    const suggestion = opened.transcript.speakerSuggestions.find(
+      (entry) => entry.speaker.id === utterance.speaker.id,
+    );
+    if (opened.transcript.editable && suggestion !== undefined) {
+      const hint = document.createElement("span");
+      hint.className = "voice-suggestion";
+      hint.textContent = `Suggested Voice: ${suggestion.suggestedName}`;
+      const accept = document.createElement("button");
+      accept.type = "button";
+      accept.textContent = "Accept";
+      accept.setAttribute(
+        "aria-label",
+        `Accept Voice suggestion ${suggestion.suggestedName}`,
+      );
+      accept.addEventListener("click", () => {
+        void acceptSuggestion(utterance.speaker.id);
+      });
+      heading.append(hint, accept);
+    }
     if (
       opened.transcript.editable &&
       opened.transcript.speakers.length > 1

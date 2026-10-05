@@ -154,3 +154,8 @@ audio {
   box-shadow: 0 0 0 1px #666;
   border-radius: 0.15rem;
 }
+
+.voice-suggestion {
+  color: #9ab;
+  font-size: 0.8rem;
+}
