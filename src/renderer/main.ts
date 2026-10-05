@@ -113,6 +113,7 @@ declare global {
       locateSource: () => Promise<{ library: LibraryView; opened: OpenedView }>;
       deleteProject: () => Promise<{ library: LibraryView; deleted: boolean }>;
       exportProject: () => Promise<{ library: LibraryView }>;
+      exportMarkdown: () => Promise<{ library: LibraryView }>;
       exportSrt: () => Promise<{ library: LibraryView }>;
       exportVtt: () => Promise<{ library: LibraryView }>;
       importProject: () => Promise<{ library: LibraryView }>;
@@ -206,6 +207,11 @@ async function deleteProject(): Promise<void> {
 
 async function exportProject(): Promise<void> {
   const result = await window.describer.exportProject();
+  library = result.library;
+}
+
+async function exportMarkdown(): Promise<void> {
+  const result = await window.describer.exportMarkdown();
   library = result.library;
 }
 
@@ -726,6 +732,13 @@ function renderPlayer(root: HTMLElement): void {
     void exportProject();
   });
 
+  const exportMarkdownButton = document.createElement("button");
+  exportMarkdownButton.type = "button";
+  exportMarkdownButton.textContent = "Export Markdown";
+  exportMarkdownButton.addEventListener("click", () => {
+    void exportMarkdown();
+  });
+
   const exportSrtButton = document.createElement("button");
   exportSrtButton.type = "button";
   exportSrtButton.textContent = "Export SRT";
@@ -758,6 +771,7 @@ function renderPlayer(root: HTMLElement): void {
   actions.append(
     locateButton,
     exportButton,
+    exportMarkdownButton,
     exportSrtButton,
     exportVttButton,
     reprocessButton,

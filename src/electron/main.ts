@@ -230,6 +230,23 @@ ipcMain.handle("describer:exportProject", async () => {
   return { library: current.library };
 });
 
+ipcMain.handle("describer:exportMarkdown", async () => {
+  const current = requireDescriber();
+  if (opened === undefined) {
+    throw new Error("No Project is open");
+  }
+  const picked = await dialog.showSaveDialog(requireWindow(), {
+    title: "Export Markdown",
+    defaultPath: `${opened.project.title}.md`,
+    filters: [{ name: "Markdown", extensions: ["md"] }],
+  });
+  if (picked.canceled || picked.filePath === undefined) {
+    return { library: current.library };
+  }
+  await current.exportMarkdown(opened.project.id, picked.filePath);
+  return { library: current.library };
+});
+
 ipcMain.handle("describer:exportSrt", async () => {
   const current = requireDescriber();
   if (opened === undefined) {
