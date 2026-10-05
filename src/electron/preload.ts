@@ -46,8 +46,24 @@ contextBridge.exposeInMainWorld("describer", {
       ipcRenderer.removeListener("describer:processing", handler);
     };
   },
+  onLibrary: (listener: (library: Library) => void): (() => void) => {
+    const handler = (_event: unknown, library: Library): void => {
+      listener(library);
+    };
+    ipcRenderer.on("describer:library", handler);
+    return () => {
+      ipcRenderer.removeListener("describer:library", handler);
+    };
+  },
   openProject: (projectId: string): Promise<OpenedView> =>
     ipcRenderer.invoke("describer:openProject", projectId),
+  getOpened: (): Promise<OpenedView | null> =>
+    ipcRenderer.invoke("describer:getOpened"),
+  reprocessProject: (): Promise<{
+    library: Library;
+    opened: OpenedView;
+    reprocessed: boolean;
+  }> => ipcRenderer.invoke("describer:reprocessProject"),
   play: (): Promise<boolean> => ipcRenderer.invoke("describer:play"),
   setRate: (rate: PlaybackRate): Promise<Playback> =>
     ipcRenderer.invoke("describer:setRate", rate),

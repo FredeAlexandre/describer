@@ -99,10 +99,16 @@ test("progress is visible while processing runs", async () => {
     await expect.poll(() => describer.processing != null).toBe(true);
     reportProgress?.(0.4);
     expect(describer.processing).toEqual({ progress: 0.4 });
-    expect(describer.library.projects).toEqual([]);
+    expect(describer.library.projects).toHaveLength(1);
+    const queued = describer.library.projects[0];
+    if (queued === undefined) {
+      throw new Error("queued Project missing");
+    }
+    expect(describer.openProject(queued.id).transcript.editable).toBe(false);
     finish?.({ speakers: [], words: [] });
     const project = await pending;
     expect(wordsOf(describer, project.id)).toEqual([]);
+    expect(describer.openProject(project.id).transcript.editable).toBe(true);
     expect(describer.processing).toBeNull();
   });
 });
