@@ -218,6 +218,22 @@ test("each queued Project is uneditable until its own process finishes", async (
   });
 });
 
+function hangUntilCancelled(
+  controls?: { signal: AbortSignal; onProgress: (progress: number) => void },
+): Promise<never> {
+  return new Promise((_, reject) => {
+    const fail = (): void => {
+      reject(new Error("Processing cancelled"));
+    };
+    const signal = controls?.signal;
+    if (signal === undefined || signal.aborted) {
+      fail();
+      return;
+    }
+    signal.addEventListener("abort", fail, { once: true });
+  });
+}
+
 test("re-process locks the Transcript until the new pass finishes", async () => {
   await withLibrary(async ({ libraryDir, sourcePath }) => {
     const bonjour = word("w2", "Bonjour", 0, 0.5);
@@ -255,6 +271,104 @@ test("re-process locks the Transcript until the new pass finishes", async () => 
     expect(opened.transcript.editable).toBe(true);
     expect(opened.transcript.utterances).toEqual([
       { speaker: speaker1, words: [bonjour] },
+    ]);
+  });
+});
+
+test("cancel drops in-flight imports including those still queued", async () => {
+  await withLibrary(async ({ libraryDir, sourcePath }) => {
+    const secondPath = path.join(path.dirname(sourcePath), "retro.wav");
+    await writeFile(secondPath, "media-bytes");
+    let startedSecond = false;
+    const describer = await openDescriber({
+      libraryDir,
+      processor: {
+        process(src, _language, controls) {
+          if (src === secondPath) {
+            startedSecond = true;
+          }
+          return hangUntilCancelled(controls);
+        },
+      },
+    });
+    const pendingFirst = describer.importSource(sourcePath, "English");
+    const pendingSecond = describer.importSource(secondPath, "French");
+    await expect.poll(() => describer.library.projects).toHaveLength(2);
+    await expect.poll(() => describer.processing != null).toBe(true);
+    describer.cancelProcessing();
+    await expect(pendingFirst).rejects.toThrow(/cancelled/i);
+    await expect(pendingSecond).rejects.toThrow(/cancelled/i);
+    expect(startedSecond).toBe(false);
+    expect(describer.library.projects).toEqual([]);
+    expect(describer.processing).toBeNull();
+  });
+});
+
+test("cancel aborts a running re-process and leaves the existing Transcript", async () => {
+  await withLibrary(async ({ libraryDir, sourcePath }) => {
+    let pass = 0;
+    const describer = await openDescriber({
+      libraryDir,
+      processor: {
+        process(src, language, controls) {
+          pass += 1;
+          if (pass === 1) {
+            return fixtureProcessor([hello]).process(src, language, controls);
+          }
+          return hangUntilCancelled(controls);
+        },
+      },
+    });
+    const project = await describer.importSource(sourcePath, "English");
+    const pending = describer.reprocessProject(project.id, true);
+    await expect.poll(() => describer.processing != null).toBe(true);
+    describer.cancelProcessing();
+    await expect(pending).rejects.toThrow(/cancelled/i);
+    expect(describer.library.projects).toEqual([project]);
+    const opened = describer.openProject(project.id);
+    expect(opened.transcript.editable).toBe(true);
+    expect(opened.transcript.utterances).toEqual([
+      { speaker: speaker1, words: [hello] },
+    ]);
+  });
+});
+
+test("cancel drops a queued re-process and leaves the existing Transcript", async () => {
+  await withLibrary(async ({ libraryDir, sourcePath }) => {
+    const secondPath = path.join(path.dirname(sourcePath), "retro.wav");
+    await writeFile(secondPath, "media-bytes");
+    let hang = false;
+    let reprocessStarted = false;
+    const describer = await openDescriber({
+      libraryDir,
+      processor: {
+        process(src, language, controls) {
+          if (!hang) {
+            return fixtureProcessor([hello]).process(src, language, controls);
+          }
+          if (src === sourcePath) {
+            reprocessStarted = true;
+          }
+          return hangUntilCancelled(controls);
+        },
+      },
+    });
+    const existing = await describer.importSource(sourcePath, "English");
+    hang = true;
+    const pendingImport = describer.importSource(secondPath, "French");
+    await expect.poll(() => describer.processing != null).toBe(true);
+    const pendingReprocess = describer.reprocessProject(existing.id, true);
+    await expect.poll(() => describer.library.projects).toHaveLength(2);
+    expect(describer.openProject(existing.id).transcript.editable).toBe(false);
+    describer.cancelProcessing();
+    await expect(pendingImport).rejects.toThrow(/cancelled/i);
+    await expect(pendingReprocess).rejects.toThrow(/cancelled/i);
+    expect(reprocessStarted).toBe(false);
+    expect(describer.library.projects).toEqual([existing]);
+    const opened = describer.openProject(existing.id);
+    expect(opened.transcript.editable).toBe(true);
+    expect(opened.transcript.utterances).toEqual([
+      { speaker: speaker1, words: [hello] },
     ]);
   });
 });

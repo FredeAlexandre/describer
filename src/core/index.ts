@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
@@ -88,6 +89,7 @@ export type OpenedProject = {
   playSelection(from: Word, through: Word): boolean;
   citation(from: Word, through: Word): Citation;
   seekToWord(word: Word): void;
+  wordById(wordId: string): Word;
   findInTranscript(query: string): readonly Word[];
   changeWordText(word: Word, text: string): Promise<void>;
   deleteWord(word: Word): Promise<void>;
@@ -121,7 +123,6 @@ export type Describer = {
     patch: {
       readonly title?: string;
       readonly recordedAt?: Date;
-      readonly language?: Language;
     },
   ): Promise<Project>;
   locateSource(projectId: string, sourcePath: string): Promise<Project>;
@@ -162,10 +163,13 @@ export function fixtureProcessor(
 ): Processor {
   const resolvedSpeakers =
     speakers ??
-    [...new Set(words.map((word) => word.speakerId))].map((id) => ({
-      id,
-      name: id === "s1" ? "Speaker 1" : id,
-    }));
+    [...new Set(words.map((word) => word.speakerId))].map((id) => {
+      const numbered = /^s(\d+)$/.exec(id);
+      return {
+        id,
+        name: numbered !== null ? `Speaker ${numbered[1]}` : id,
+      };
+    });
   return {
     async process(_sourcePath, _language, controls) {
       if (controls?.signal.aborted === true) {
@@ -252,16 +256,26 @@ function storedFromProcessed(
   };
 }
 
-const VIDEO_EXTENSIONS = new Set([
-  ".mp4",
-  ".webm",
-  ".mkv",
-  ".mov",
-  ".avi",
-]);
-
 function sourceHasPicture(sourcePath: string): boolean {
-  return VIDEO_EXTENSIONS.has(path.extname(sourcePath).toLowerCase());
+  const probed = spawnSync(
+    "ffprobe",
+    [
+      "-v",
+      "error",
+      "-select_streams",
+      "v",
+      "-show_entries",
+      "stream=codec_type",
+      "-of",
+      "csv=p=0",
+      sourcePath,
+    ],
+    { encoding: "utf8" },
+  );
+  if (probed.status !== 0) {
+    return false;
+  }
+  return probed.stdout.split(/\r?\n/).some((line) => line.trim() === "video");
 }
 
 const LONG_PAUSE_SECONDS = 2;
@@ -271,14 +285,14 @@ function padTime(value: number, width: number): string {
 }
 
 function formatSrtTime(seconds: number): string {
-  return formatCaptionTime(seconds, ",");
+  return formatTimestamp(seconds, ",");
 }
 
 function formatVttTime(seconds: number): string {
-  return formatCaptionTime(seconds, ".");
+  return formatTimestamp(seconds, ".");
 }
 
-function formatCaptionTime(seconds: number, fractionSep: "," | "."): string {
+function formatTimestamp(seconds: number, fractionSep: "," | "."): string {
   const totalMs = Math.round(seconds * 1000);
   const hours = Math.floor(totalMs / 3_600_000);
   const minutes = Math.floor((totalMs % 3_600_000) / 60_000);
@@ -287,32 +301,36 @@ function formatCaptionTime(seconds: number, fractionSep: "," | "."): string {
   return `${padTime(hours, 2)}:${padTime(minutes, 2)}:${padTime(secs, 2)}${fractionSep}${padTime(millis, 3)}`;
 }
 
-const MAX_CUE_DURATION_SECONDS = 7;
-const MAX_CUE_LENGTH = 42;
+const MAX_CAPTION_DURATION_SECONDS = 7;
+const MAX_CAPTION_LENGTH = 42;
 
-type CaptionCue = {
+type Caption = {
   readonly start: number;
   readonly end: number;
   readonly text: string;
 };
 
-function cueText(words: readonly Word[]): string {
+function captionText(words: readonly Word[]): string {
   return words.map((entry) => entry.text).join(" ");
 }
 
-function wrapCaptionCues(words: readonly Word[]): CaptionCue[] {
-  const cues: CaptionCue[] = [];
+function wrapCaptions(words: readonly Word[]): Caption[] {
+  const captions: Caption[] = [];
   let current: Word[] = [];
   for (const entry of words) {
     const first = current[0];
     if (
       first !== undefined &&
-      (entry.end - first.start > MAX_CUE_DURATION_SECONDS ||
-        cueText([...current, entry]).length > MAX_CUE_LENGTH)
+      (entry.end - first.start > MAX_CAPTION_DURATION_SECONDS ||
+        captionText([...current, entry]).length > MAX_CAPTION_LENGTH)
     ) {
       const last = current[current.length - 1];
       if (last !== undefined) {
-        cues.push({ start: first.start, end: last.end, text: cueText(current) });
+        captions.push({
+          start: first.start,
+          end: last.end,
+          text: captionText(current),
+        });
       }
       current = [];
     }
@@ -321,38 +339,42 @@ function wrapCaptionCues(words: readonly Word[]): CaptionCue[] {
   const first = current[0];
   const last = current[current.length - 1];
   if (first !== undefined && last !== undefined) {
-    cues.push({ start: first.start, end: last.end, text: cueText(current) });
+    captions.push({
+      start: first.start,
+      end: last.end,
+      text: captionText(current),
+    });
   }
-  return cues;
+  return captions;
 }
 
-function formatSrt(cues: readonly CaptionCue[]): string {
-  if (cues.length === 0) {
+function formatSrt(captions: readonly Caption[]): string {
+  if (captions.length === 0) {
     return "";
   }
-  return cues
+  return captions
     .map(
-      (cue, index) =>
-        `${index + 1}\n${formatSrtTime(cue.start)} --> ${formatSrtTime(cue.end)}\n${cue.text}\n`,
+      (caption, index) =>
+        `${index + 1}\n${formatSrtTime(caption.start)} --> ${formatSrtTime(caption.end)}\n${caption.text}\n`,
     )
     .join("\n");
 }
 
-function formatVtt(cues: readonly CaptionCue[]): string {
-  if (cues.length === 0) {
+function formatVtt(captions: readonly Caption[]): string {
+  if (captions.length === 0) {
     return "WEBVTT\n";
   }
-  const body = cues
+  const body = captions
     .map(
-      (cue) =>
-        `${formatVttTime(cue.start)} --> ${formatVttTime(cue.end)}\n${cue.text}\n`,
+      (caption) =>
+        `${formatVttTime(caption.start)} --> ${formatVttTime(caption.end)}\n${caption.text}\n`,
     )
     .join("\n");
   return `WEBVTT\n\n${body}`;
 }
 
 function formatMarkdownTime(seconds: number): string {
-  return formatCaptionTime(seconds, ".");
+  return formatTimestamp(seconds, ".");
 }
 
 function formatMarkdown(
@@ -843,6 +865,11 @@ export async function openDescriber(
   const lockedProjects = new Set<string>();
   const unpersistedProjects = new Set<string>();
   let processQueue: Promise<void> = Promise.resolve();
+  const waiting: Array<{
+    kind: "import" | "reprocess";
+    projectId: string;
+    cancelled: boolean;
+  }> = [];
 
   function epochOf(projectId: string): number {
     return transcriptEpoch.get(projectId) ?? 0;
@@ -852,8 +879,24 @@ export async function openDescriber(
     transcriptEpoch.set(projectId, epochOf(projectId) + 1);
   }
 
-  function enqueueProcess<T>(job: () => Promise<T>): Promise<T> {
-    const run = processQueue.then(job, job);
+  function enqueueProcess<T>(
+    kind: "import" | "reprocess",
+    projectId: string,
+    job: () => Promise<T>,
+  ): Promise<T> {
+    const entry = { kind, projectId, cancelled: false };
+    waiting.push(entry);
+    const start = async (): Promise<T> => {
+      const index = waiting.indexOf(entry);
+      if (index >= 0) {
+        waiting.splice(index, 1);
+      }
+      if (entry.cancelled) {
+        throw new Error("Processing cancelled");
+      }
+      return job();
+    };
+    const run = processQueue.then(start, start);
     processQueue = run.then(
       () => undefined,
       () => undefined,
@@ -906,6 +949,20 @@ export async function openDescriber(
     unpersistedProjects.delete(projectId);
   }
 
+  function projectForExport(projectId: string): {
+    project: Project;
+    stored: StoredTranscript;
+  } {
+    const project = projects.find((entry) => entry.id === projectId);
+    if (project === undefined) {
+      throw new Error(`Project not found: ${projectId}`);
+    }
+    return {
+      project,
+      stored: transcripts.get(project.id) ?? EMPTY_TRANSCRIPT,
+    };
+  }
+
   async function runProcessor(
     sourcePath: string,
     language: Language,
@@ -945,6 +1002,14 @@ export async function openDescriber(
     },
     cancelProcessing(): void {
       activeImport?.abort();
+      for (const job of waiting) {
+        job.cancelled = true;
+        if (job.kind === "import") {
+          dropImport(job.projectId);
+        } else {
+          lockedProjects.delete(job.projectId);
+        }
+      }
     },
     async importSource(
       sourcePath: string,
@@ -962,7 +1027,7 @@ export async function openDescriber(
       transcripts.set(project.id, EMPTY_TRANSCRIPT);
       lockedProjects.add(project.id);
       unpersistedProjects.add(project.id);
-      return enqueueProcess(async () => {
+      return enqueueProcess("import", project.id, async () => {
         try {
           const processed = await runProcessor(sourcePath, language);
           transcripts.set(project.id, storedFromProcessed(processed, voices));
@@ -982,7 +1047,6 @@ export async function openDescriber(
       patch: {
         readonly title?: string;
         readonly recordedAt?: Date;
-        readonly language?: Language;
       },
     ): Promise<Project> {
       const index = projects.findIndex((project) => project.id === projectId);
@@ -997,7 +1061,6 @@ export async function openDescriber(
         ...current,
         title: patch.title ?? current.title,
         recordedAt: patch.recordedAt ?? current.recordedAt,
-        language: patch.language ?? current.language,
       };
       projects[index] = updated;
       await persist();
@@ -1059,11 +1122,7 @@ export async function openDescriber(
       projectId: string,
       destinationPath: string,
     ): Promise<void> {
-      const project = projects.find((entry) => entry.id === projectId);
-      if (project === undefined) {
-        throw new Error(`Project not found: ${projectId}`);
-      }
-      const stored = transcripts.get(project.id) ?? EMPTY_TRANSCRIPT;
+      const { project, stored } = projectForExport(projectId);
       await writeFile(
         destinationPath,
         formatMarkdown(
@@ -1076,11 +1135,7 @@ export async function openDescriber(
       projectId: string,
       destinationPath: string,
     ): Promise<void> {
-      const project = projects.find((entry) => entry.id === projectId);
-      if (project === undefined) {
-        throw new Error(`Project not found: ${projectId}`);
-      }
-      const stored = transcripts.get(project.id) ?? EMPTY_TRANSCRIPT;
+      const { project, stored } = projectForExport(projectId);
       await writeReadablePdf(
         destinationPath,
         formatMarkdown(
@@ -1093,23 +1148,15 @@ export async function openDescriber(
       projectId: string,
       destinationPath: string,
     ): Promise<void> {
-      const project = projects.find((entry) => entry.id === projectId);
-      if (project === undefined) {
-        throw new Error(`Project not found: ${projectId}`);
-      }
-      const stored = transcripts.get(project.id) ?? EMPTY_TRANSCRIPT;
-      await writeFile(destinationPath, formatSrt(wrapCaptionCues(stored.words)));
+      const { stored } = projectForExport(projectId);
+      await writeFile(destinationPath, formatSrt(wrapCaptions(stored.words)));
     },
     async exportVtt(
       projectId: string,
       destinationPath: string,
     ): Promise<void> {
-      const project = projects.find((entry) => entry.id === projectId);
-      if (project === undefined) {
-        throw new Error(`Project not found: ${projectId}`);
-      }
-      const stored = transcripts.get(project.id) ?? EMPTY_TRANSCRIPT;
-      await writeFile(destinationPath, formatVtt(wrapCaptionCues(stored.words)));
+      const { stored } = projectForExport(projectId);
+      await writeFile(destinationPath, formatVtt(wrapCaptions(stored.words)));
     },
     async importProject(projectFilePath: string): Promise<Project> {
       const raw = await readFile(projectFilePath, "utf8");
@@ -1136,7 +1183,7 @@ export async function openDescriber(
       }
       dropOpenedHandles(project.id);
       lockedProjects.add(project.id);
-      return enqueueProcess(async () => {
+      return enqueueProcess("reprocess", project.id, async () => {
         const current = projects.find((entry) => entry.id === projectId);
         if (current === undefined) {
           lockedProjects.delete(projectId);
@@ -1209,7 +1256,7 @@ export async function openDescriber(
         transcripts.set(projectId, next);
         await persist();
       }
-      if (sourcePresent) {
+      if (sourcePresent && !lockedProjects.has(projectId)) {
         cursor.play();
       }
       return {
@@ -1300,6 +1347,15 @@ export async function openDescriber(
         },
         seekToWord(word: Word): void {
           cursor.seek(word.start);
+        },
+        wordById(wordId: string): Word {
+          const word = storedTranscript().words.find(
+            (entry) => entry.id === wordId,
+          );
+          if (word === undefined) {
+            throw new Error(`Word not found: ${wordId}`);
+          }
+          return word;
         },
         findInTranscript(query: string): readonly Word[] {
           const needle = query.trim().toLowerCase();

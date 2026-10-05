@@ -120,7 +120,6 @@ declare global {
         patch: {
           readonly title?: string;
           readonly recordedAt?: string;
-          readonly language?: Language;
         },
       ) => Promise<{ project: ProjectView; library: LibraryView }>;
       locateSource: () => Promise<{ library: LibraryView; opened: OpenedView }>;
@@ -147,8 +146,6 @@ let libraryQuery = "";
 let libraryHits: readonly SearchHitView[] = [];
 let transcriptQuery = "";
 let selectedWordIds: string[] = [];
-let selectionStopAt: number | undefined;
-let applyingSelectionSeek = false;
 
 const NEW_SPEAKER = "__new__";
 
@@ -199,7 +196,7 @@ async function locateSource(): Promise<void> {
   opened = result.opened;
   render();
   const media = mediaElement();
-  if (media !== null && opened.sourceUrl !== null) {
+  if (media !== null && opened.sourceUrl !== null && opened.playback.playing) {
     media.playbackRate = opened.playback.rate;
     void media.play();
   }
@@ -252,22 +249,12 @@ async function openProject(projectId: string): Promise<void> {
   const media = mediaElement();
   if (media !== null) {
     media.playbackRate = opened.playback.rate;
-    void media.play();
-    highlightCurrentWord(media.currentTime);
+    if (opened.playback.playing) {
+      void media.play();
+    }
+    highlightCurrentWord(opened.playback.currentTime);
     media.addEventListener("timeupdate", () => {
-      if (
-        selectionStopAt !== undefined &&
-        media.currentTime >= selectionStopAt
-      ) {
-        media.pause();
-        selectionStopAt = undefined;
-      }
-      highlightCurrentWord(media.currentTime);
-    });
-    media.addEventListener("seeking", () => {
-      if (!applyingSelectionSeek) {
-        selectionStopAt = undefined;
-      }
+      void followCorePlayback(media);
     });
   }
 }
@@ -312,7 +299,6 @@ async function seekToWord(wordId: string): Promise<void> {
   if (opened === undefined) {
     return;
   }
-  selectionStopAt = undefined;
   opened = await window.describer.seekToWord(wordId);
   const word = wordById(opened.transcript, wordId);
   const media = mediaElement();
@@ -358,14 +344,30 @@ async function playSelection(): Promise<void> {
   if (!played) {
     return;
   }
-  selectionStopAt = ends.through.end;
+  const snapshot = await window.describer.getOpened();
+  if (snapshot === null) {
+    return;
+  }
+  opened = snapshot;
   const media = mediaElement();
   if (media !== null) {
-    applyingSelectionSeek = true;
-    media.currentTime = ends.from.start;
-    applyingSelectionSeek = false;
-    void media.play();
+    media.currentTime = snapshot.playback.currentTime;
+    if (snapshot.playback.playing) {
+      void media.play();
+    }
   }
+}
+
+async function followCorePlayback(media: HTMLMediaElement): Promise<void> {
+  const snapshot = await window.describer.getOpened();
+  if (snapshot === null) {
+    return;
+  }
+  opened = snapshot;
+  if (!snapshot.playback.playing && !media.paused) {
+    media.pause();
+  }
+  highlightCurrentWord(snapshot.playback.currentTime);
 }
 
 async function copyCitation(asMarkdown: boolean): Promise<void> {
@@ -388,8 +390,8 @@ function nextWordId(
   return words[index + 1]?.id;
 }
 
-function tokensFrom(raw: string): string[] {
-  return raw.trim().split(/\s+/).filter((token) => token.length > 0);
+function wordsFrom(raw: string): string[] {
+  return raw.trim().split(/\s+/).filter((word) => word.length > 0);
 }
 
 let rendering = false;
@@ -402,16 +404,16 @@ async function flushWord(wordId: string, raw: string): Promise<boolean> {
   if (existing === undefined) {
     return false;
   }
-  const tokens = tokensFrom(raw);
-  if (tokens.length === 0) {
+  const words = wordsFrom(raw);
+  if (words.length === 0) {
     opened = await window.describer.deleteWord(wordId);
     return true;
   }
-  const first = tokens[0];
+  const first = words[0];
   if (first === undefined) {
     return false;
   }
-  const extras = tokens.slice(1);
+  const extras = words.slice(1);
   if (extras.length === 0 && first === existing.text) {
     return false;
   }
@@ -567,13 +569,7 @@ function wordById(
   transcript: TranscriptView,
   wordId: string,
 ): WordView | undefined {
-  for (const utterance of transcript.utterances) {
-    const word = utterance.words.find((entry) => entry.id === wordId);
-    if (word !== undefined) {
-      return word;
-    }
-  }
-  return undefined;
+  return allWords(transcript).find((word) => word.id === wordId);
 }
 
 function wordAtTime(
@@ -624,7 +620,6 @@ async function setRate(rate: PlaybackRate): Promise<void> {
 async function saveProject(patch: {
   readonly title?: string;
   readonly recordedAt?: string;
-  readonly language?: Language;
 }): Promise<void> {
   if (opened === undefined) {
     return;
@@ -788,20 +783,10 @@ function renderPlayer(root: HTMLElement): void {
     void saveProject({ recordedAt: new Date(recordedAt.value).toISOString() });
   });
 
-  const language = document.createElement("select");
-  language.setAttribute("aria-label", "Project language");
-  for (const option of ["English", "French"] as const) {
-    const item = document.createElement("option");
-    item.value = option;
-    item.textContent = option;
-    if (option === opened.project.language) {
-      item.selected = true;
-    }
-    language.append(item);
-  }
-  language.addEventListener("change", () => {
-    void saveProject({ language: language.value as Language });
-  });
+  const language = document.createElement("p");
+  language.className = "language";
+  language.setAttribute("aria-label", "Language");
+  language.textContent = opened.project.language;
 
   pane.append(title, recordedAt, language);
 
@@ -886,7 +871,7 @@ function renderPlayer(root: HTMLElement): void {
     const video = document.createElement("video");
     video.src = opened.sourceUrl;
     video.controls = true;
-    video.autoplay = true;
+    video.autoplay = opened.playback.playing;
     video.playbackRate = opened.playback.rate;
     pane.append(video);
   } else {
@@ -896,7 +881,7 @@ function renderPlayer(root: HTMLElement): void {
     const audio = document.createElement("audio");
     audio.src = opened.sourceUrl;
     audio.controls = true;
-    audio.autoplay = true;
+    audio.autoplay = opened.playback.playing;
     audio.playbackRate = opened.playback.rate;
     audio.addEventListener("timeupdate", () => {
       clock.textContent = formatClock(audio.currentTime);
@@ -1013,8 +998,8 @@ function renderTranscript(root: HTMLElement): void {
   }
 
   for (const utterance of opened.transcript.utterances) {
-    const block = document.createElement("article");
-    block.className = "utterance";
+    const utteranceEl = document.createElement("article");
+    utteranceEl.className = "utterance";
     const heading = document.createElement("div");
     heading.className = "speaker-row";
     const speaker = document.createElement("span");
@@ -1088,27 +1073,27 @@ function renderTranscript(root: HTMLElement): void {
       if (index > 0) {
         text.append(" ");
       }
-      const token = document.createElement("span");
-      token.className = "word";
-      token.dataset.wordId = word.id;
-      token.textContent = word.text;
+      const wordEl = document.createElement("span");
+      wordEl.className = "word";
+      wordEl.dataset.wordId = word.id;
+      wordEl.textContent = word.text;
       if (opened.transcript.editable) {
-        token.contentEditable = "true";
-        token.spellcheck = false;
-        token.addEventListener("blur", () => {
-          void commitWord(word.id, token.textContent ?? "");
+        wordEl.contentEditable = "true";
+        wordEl.spellcheck = false;
+        wordEl.addEventListener("blur", () => {
+          void commitWord(word.id, wordEl.textContent ?? "");
         });
-        token.addEventListener("keydown", (event) => {
+        wordEl.addEventListener("keydown", (event) => {
           if (event.key === "Enter") {
             event.preventDefault();
-            void breakParagraph(word.id, token.textContent ?? "");
+            void breakParagraph(word.id, wordEl.textContent ?? "");
           }
         });
       }
-      text.append(token);
+      text.append(wordEl);
     }
-    block.append(heading, text);
-    pane.append(block);
+    utteranceEl.append(heading, text);
+    pane.append(utteranceEl);
   }
 
   pane.addEventListener("mouseup", (event) => {

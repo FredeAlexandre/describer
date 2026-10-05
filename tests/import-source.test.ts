@@ -99,7 +99,7 @@ test("last used language persists across launches", async () => {
   }
 });
 
-test("title, recorded-at, and language edits persist without an explicit Save", async () => {
+test("title and recorded-at edits persist without an explicit Save", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "describer-import-"));
   const libraryDir = path.join(root, "library");
   const sourcePath = path.join(root, "standup.mp4");
@@ -111,7 +111,6 @@ test("title, recorded-at, and language edits persist without an explicit Save", 
     await describer.updateProject(project.id, {
       title: "Weekly standup",
       recordedAt,
-      language: "French",
     });
     const reopened = await openDescriber({ libraryDir, processor: fixtureProcessor() });
     expect(reopened.library.projects).toEqual([
@@ -119,10 +118,30 @@ test("title, recorded-at, and language edits persist without an explicit Save", 
         id: project.id,
         title: "Weekly standup",
         recordedAt,
-        language: "French",
+        language: "English",
         sourcePath,
       },
     ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("language chosen at import is not changed by later Project edits", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "describer-import-"));
+  const libraryDir = path.join(root, "library");
+  const sourcePath = path.join(root, "standup.mp4");
+  await writeFile(sourcePath, "");
+  try {
+    const describer = await openDescriber({ libraryDir, processor: fixtureProcessor() });
+    const project = await describer.importSource(sourcePath, "French");
+    await describer.updateProject(project.id, {
+      title: "Weekly standup",
+      language: "English",
+    } as { readonly title?: string; readonly recordedAt?: Date });
+    expect(describer.library.projects[0]?.language).toBe("French");
+    const reopened = await openDescriber({ libraryDir, processor: fixtureProcessor() });
+    expect(reopened.library.projects[0]?.language).toBe("French");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
