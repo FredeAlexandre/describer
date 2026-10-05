@@ -99,6 +99,8 @@ contextBridge.exposeInMainWorld("describer", {
     speaker: Speaker,
   ): Promise<OpenedView> =>
     ipcRenderer.invoke("describer:reassignWords", wordIds, speaker),
+  acceptSpeakerSuggestion: (speakerId: string): Promise<OpenedView> =>
+    ipcRenderer.invoke("describer:acceptSpeakerSuggestion", speakerId),
   undo: (): Promise<OpenedView> => ipcRenderer.invoke("describer:undo"),
   redo: (): Promise<OpenedView> => ipcRenderer.invoke("describer:redo"),
   updateProject: (
