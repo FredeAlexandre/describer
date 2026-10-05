@@ -107,6 +107,7 @@ export type Describer = {
   locateSource(projectId: string, sourcePath: string): Promise<Project>;
   deleteProject(projectId: string): Promise<void>;
   exportProject(projectId: string, destinationPath: string): Promise<void>;
+  exportMarkdown(projectId: string, destinationPath: string): Promise<void>;
   exportSrt(projectId: string, destinationPath: string): Promise<void>;
   exportVtt(projectId: string, destinationPath: string): Promise<void>;
   importProject(projectFilePath: string): Promise<Project>;
@@ -293,6 +294,35 @@ function formatVtt(cues: readonly CaptionCue[]): string {
     )
     .join("\n");
   return `WEBVTT\n\n${body}`;
+}
+
+function formatMarkdownTime(seconds: number): string {
+  return formatCaptionTime(seconds, ".");
+}
+
+function formatMarkdown(
+  project: Project,
+  utterances: readonly Utterance[],
+): string {
+  const lines = [
+    `# ${project.title}`,
+    "",
+    `Recorded at: ${project.recordedAt.toISOString()}`,
+    `Language: ${project.language}`,
+  ];
+  for (const utterance of utterances) {
+    const first = utterance.words[0];
+    if (first === undefined) {
+      continue;
+    }
+    lines.push(
+      "",
+      `**${utterance.speaker.name}** (${formatMarkdownTime(first.start)})`,
+      "",
+      utterance.words.map((entry) => entry.text).join(" "),
+    );
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 function findPhraseStarts(words: readonly Word[], needle: string): Word[] {
@@ -734,6 +764,23 @@ export async function openDescriber(
           null,
           2,
         )}\n`,
+      );
+    },
+    async exportMarkdown(
+      projectId: string,
+      destinationPath: string,
+    ): Promise<void> {
+      const project = projects.find((entry) => entry.id === projectId);
+      if (project === undefined) {
+        throw new Error(`Project not found: ${projectId}`);
+      }
+      const stored = transcripts.get(project.id) ?? EMPTY_TRANSCRIPT;
+      await writeFile(
+        destinationPath,
+        formatMarkdown(
+          project,
+          utterancesFrom(stored.speakers, stored.words),
+        ),
       );
     },
     async exportSrt(
