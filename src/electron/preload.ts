@@ -5,6 +5,8 @@ import type {
   Playback,
   PlaybackRate,
   Project,
+  Transcript,
+  Word,
 } from "../core/index.js";
 
 export type OpenedView = {
@@ -12,6 +14,8 @@ export type OpenedView = {
   readonly hasPicture: boolean;
   readonly playback: Playback;
   readonly sourceUrl: string | null;
+  readonly transcript: Transcript;
+  readonly currentWord: Word | null;
 };
 
 contextBridge.exposeInMainWorld("describer", {
@@ -24,6 +28,8 @@ contextBridge.exposeInMainWorld("describer", {
   play: (): Promise<boolean> => ipcRenderer.invoke("describer:play"),
   setRate: (rate: PlaybackRate): Promise<Playback> =>
     ipcRenderer.invoke("describer:setRate", rate),
+  seekToWord: (wordId: string): Promise<OpenedView> =>
+    ipcRenderer.invoke("describer:seekToWord", wordId),
   updateProject: (
     projectId: string,
     patch: {

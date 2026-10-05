@@ -28,6 +28,8 @@ function openedSnapshot(): {
   hasPicture: boolean;
   playback: OpenedProject["playback"];
   sourceUrl: string | null;
+  transcript: OpenedProject["transcript"];
+  currentWord: OpenedProject["currentWord"] | null;
 } {
   if (opened === undefined) {
     throw new Error("No Project is open");
@@ -40,6 +42,8 @@ function openedSnapshot(): {
     sourceUrl: sourcePresent
       ? pathToFileURL(opened.project.sourcePath).href
       : null,
+    transcript: opened.transcript,
+    currentWord: opened.currentWord ?? null,
   };
 }
 
@@ -179,6 +183,20 @@ ipcMain.handle("describer:setRate", (_event, rate: PlaybackRate) => {
   }
   opened.setRate(rate);
   return opened.playback;
+});
+
+ipcMain.handle("describer:seekToWord", (_event, wordId: string) => {
+  if (opened === undefined) {
+    throw new Error("No Project is open");
+  }
+  for (const utterance of opened.transcript.utterances) {
+    const word = utterance.words.find((entry) => entry.id === wordId);
+    if (word !== undefined) {
+      opened.seekToWord(word);
+      break;
+    }
+  }
+  return openedSnapshot();
 });
 
 ipcMain.handle(
