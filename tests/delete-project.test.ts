@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "vitest";
-import { openDescriber } from "../src/core/index.ts";
+import { openDescriber, fixtureProcessor } from "../src/core/index.ts";
 
 test("deleting a Project removes it from the Library and never deletes the Source", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "describer-delete-"));
@@ -11,7 +11,7 @@ test("deleting a Project removes it from the Library and never deletes the Sourc
   const sourcePath = path.join(root, "standup.mp4");
   await writeFile(sourcePath, "");
   try {
-    const describer = await openDescriber({ libraryDir });
+    const describer = await openDescriber({ libraryDir, processor: fixtureProcessor() });
     const project = await describer.importSource(sourcePath, "English");
     await describer.deleteProject(project.id);
     expect(describer.library.projects).toEqual([]);
@@ -29,7 +29,7 @@ test("deleted Project stays gone after reopen and the Source remains", async () 
   await writeFile(keepPath, "");
   await writeFile(deletePath, "");
   try {
-    const describer = await openDescriber({ libraryDir });
+    const describer = await openDescriber({ libraryDir, processor: fixtureProcessor() });
     const kept = await describer.importSource(keepPath, "English");
     const removed = await describer.importSource(deletePath, "French");
     await describer.deleteProject(removed.id);

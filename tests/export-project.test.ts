@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "vitest";
-import { openDescriber } from "../src/core/index.ts";
+import { openDescriber, fixtureProcessor } from "../src/core/index.ts";
 
 test("Export Project writes a copy that opening copies into the Library", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "describer-export-"));
@@ -13,7 +13,7 @@ test("Export Project writes a copy that opening copies into the Library", async 
   const exportPath = path.join(root, "backup", "standup.project");
   await writeFile(sourcePath, "media-bytes");
   try {
-    const describer = await openDescriber({ libraryDir });
+    const describer = await openDescriber({ libraryDir, processor: fixtureProcessor() });
     const project = await describer.importSource(sourcePath, "French");
     await describer.updateProject(project.id, { title: "Weekly standup" });
     await mkdir(path.dirname(exportPath), { recursive: true });
@@ -42,7 +42,7 @@ test("edits after opening a Project file apply to the Library copy", async () =>
   const exportPath = path.join(root, "standup.project");
   await writeFile(sourcePath, "media-bytes");
   try {
-    const describer = await openDescriber({ libraryDir });
+    const describer = await openDescriber({ libraryDir, processor: fixtureProcessor() });
     const project = await describer.importSource(sourcePath, "English");
     await describer.updateProject(project.id, { title: "Weekly standup" });
     await describer.exportProject(project.id, exportPath);

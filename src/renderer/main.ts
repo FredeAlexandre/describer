@@ -21,6 +21,10 @@ type PlaybackView = {
   readonly rate: PlaybackRate;
 };
 
+type ProcessingView = {
+  readonly progress: number;
+};
+
 type WordView = {
   readonly id: string;
   readonly text: string;
@@ -59,6 +63,10 @@ declare global {
     describer: {
       open: () => Promise<{ library: LibraryView }>;
       importSource: (language: Language) => Promise<{ library: LibraryView }>;
+      cancelProcessing: () => Promise<void>;
+      onProcessing: (
+        listener: (processing: ProcessingView | null) => void,
+      ) => () => void;
       openProject: (projectId: string) => Promise<OpenedView>;
       play: () => Promise<boolean>;
       setRate: (rate: PlaybackRate) => Promise<PlaybackView>;
@@ -84,6 +92,7 @@ const RATES: readonly PlaybackRate[] = [1, 1.5, 2];
 let library: LibraryView;
 let opened: OpenedView | undefined;
 let importLanguage: Language = "English";
+let processing: ProcessingView | null = null;
 
 function recordedAtDate(value: Date | string): Date {
   return value instanceof Date ? value : new Date(value);
@@ -280,6 +289,7 @@ function renderLibraryList(root: HTMLElement): void {
   const importButton = document.createElement("button");
   importButton.type = "button";
   importButton.textContent = "Import Source";
+  importButton.disabled = processing != null;
   importButton.addEventListener("click", () => {
     void importSource();
   });
@@ -293,6 +303,22 @@ function renderLibraryList(root: HTMLElement): void {
 
   importRow.append(language, importButton, openProjectFile);
   root.append(importRow);
+
+  if (processing != null) {
+    const status = document.createElement("p");
+    status.className = "processing";
+    status.textContent = `Processing… ${Math.round(processing.progress * 100)}%`;
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    cancel.addEventListener("click", () => {
+      void window.describer.cancelProcessing();
+    });
+    const row = document.createElement("div");
+    row.className = "processing-row";
+    row.append(status, cancel);
+    root.append(row);
+  }
 
   if (library.projects.length === 0) {
     const empty = document.createElement("p");
@@ -521,6 +547,10 @@ function render(): void {
 const started = await window.describer.open();
 library = started.library;
 importLanguage = library.lastUsedLanguage;
+window.describer.onProcessing((next) => {
+  processing = next;
+  render();
+});
 render();
 
 export {};

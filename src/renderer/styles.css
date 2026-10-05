@@ -37,10 +37,16 @@ h1 {
 }
 
 .import,
+.processing-row,
 .rates {
   display: flex;
   gap: 0.5rem;
   margin: 1rem 0;
+  align-items: center;
+}
+
+.processing {
+  margin: 0;
 }
 
 .projects {

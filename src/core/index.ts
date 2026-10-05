@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { onDeviceProcessor } from "./on-device-processor.js";
 
 export type Language = "French" | "English";
 
@@ -52,6 +53,10 @@ export type Transcript = {
   readonly editable: boolean;
 };
 
+export type Processing = {
+  readonly progress: number;
+};
+
 export type OpenedProject = {
   readonly project: Project;
   readonly playback: Playback;
@@ -65,7 +70,9 @@ export type OpenedProject = {
 
 export type Describer = {
   readonly library: Library;
+  readonly processing: Processing | null;
   importSource(sourcePath: string, language?: Language): Promise<Project>;
+  cancelProcessing(): void;
   updateProject(
     projectId: string,
     patch: {
@@ -86,9 +93,35 @@ export type ProcessorResult = {
   readonly words: readonly Word[];
 };
 
-export type Processor = {
-  process(sourcePath: string, language: Language): Promise<ProcessorResult>;
+export type ProcessorControls = {
+  readonly signal: AbortSignal;
+  readonly onProgress: (progress: number) => void;
 };
+
+export type Processor = {
+  process(
+    sourcePath: string,
+    language: Language,
+    controls?: ProcessorControls,
+  ): Promise<ProcessorResult>;
+};
+
+export function fixtureProcessor(words: readonly Word[] = []): Processor {
+  const speakerIds = [...new Set(words.map((word) => word.speakerId))];
+  const speakers: Speaker[] = speakerIds.map((id) => ({
+    id,
+    name: id === "s1" ? "Speaker 1" : id,
+  }));
+  return {
+    async process(_sourcePath, _language, controls) {
+      if (controls?.signal.aborted === true) {
+        throw new Error("Processing cancelled");
+      }
+      controls?.onProgress(1);
+      return { speakers, words };
+    },
+  };
+}
 
 export type OpenDescriberOptions = {
   readonly libraryDir?: string;
@@ -129,12 +162,6 @@ const VIDEO_EXTENSIONS = new Set([
 function sourceHasPicture(sourcePath: string): boolean {
   return VIDEO_EXTENSIONS.has(path.extname(sourcePath).toLowerCase());
 }
-
-const emptyProcessor: Processor = {
-  async process() {
-    return { speakers: [], words: [] };
-  },
-};
 
 const LONG_PAUSE_SECONDS = 2;
 
@@ -314,7 +341,9 @@ export async function openDescriber(
   const transcripts = loaded.transcripts;
   let lastUsedLanguage: Language = loaded.lastUsedLanguage;
   const now = options.now ?? Date.now;
-  const processor = options.processor ?? emptyProcessor;
+  const processor = options.processor ?? onDeviceProcessor();
+  let processing: Processing | null = null;
+  let activeImport: AbortController | undefined;
 
   async function persist(): Promise<void> {
     const stored: StoredLibrary = {
@@ -334,35 +363,59 @@ export async function openDescriber(
         lastUsedLanguage,
       };
     },
+    get processing(): Processing | null {
+      return processing;
+    },
+    cancelProcessing(): void {
+      activeImport?.abort();
+    },
     async importSource(
       sourcePath: string,
       language: Language = lastUsedLanguage,
     ): Promise<Project> {
       const sourceStat = await stat(sourcePath);
-      const processed = await processor.process(sourcePath, language);
-      utterancesFrom(processed.speakers, processed.words);
-      const project: Project = {
-        id: randomUUID(),
-        title: path.basename(sourcePath),
-        recordedAt: sourceStat.mtime,
-        language,
-        sourcePath,
-      };
-      projects.push(project);
-      transcripts.set(project.id, {
-        speakers: processed.speakers,
-        words: processed.words.map((word) => ({
-          id: word.id,
-          text: word.text,
-          start: word.start,
-          end: word.end,
-          speakerId: word.speakerId,
-          paragraphBreakBefore: word.paragraphBreakBefore === true,
-        })),
-      });
-      lastUsedLanguage = language;
-      await persist();
-      return project;
+      const controller = new AbortController();
+      activeImport = controller;
+      processing = { progress: 0 };
+      try {
+        const processed = await processor.process(sourcePath, language, {
+          signal: controller.signal,
+          onProgress: (progress) => {
+            processing = { progress };
+          },
+        });
+        if (controller.signal.aborted) {
+          throw new Error("Processing cancelled");
+        }
+        utterancesFrom(processed.speakers, processed.words);
+        const project: Project = {
+          id: randomUUID(),
+          title: path.basename(sourcePath),
+          recordedAt: sourceStat.mtime,
+          language,
+          sourcePath,
+        };
+        projects.push(project);
+        transcripts.set(project.id, {
+          speakers: processed.speakers,
+          words: processed.words.map((word) => ({
+            id: word.id,
+            text: word.text,
+            start: word.start,
+            end: word.end,
+            speakerId: word.speakerId,
+            paragraphBreakBefore: word.paragraphBreakBefore === true,
+          })),
+        });
+        lastUsedLanguage = language;
+        await persist();
+        return project;
+      } finally {
+        processing = null;
+        if (activeImport === controller) {
+          activeImport = undefined;
+        }
+      }
     },
     async updateProject(
       projectId: string,

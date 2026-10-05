@@ -40,7 +40,11 @@ test("a Project whose processing produced no Words still opens with an empty Tra
   const sourcePath = path.join(root, "silence.wav");
   await writeFile(sourcePath, "");
   try {
-    const describer = await openDescriber({ libraryDir, now: () => 0 });
+    const describer = await openDescriber({
+      libraryDir,
+      now: () => 0,
+      processor: fixtureProcessor([]),
+    });
     const project = await describer.importSource(sourcePath, "English");
     const opened = describer.openProject(project.id);
     expect(opened.transcript.utterances).toEqual([]);

@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "vitest";
-import { openDescriber } from "../src/core/index.ts";
+import { openDescriber, fixtureProcessor } from "../src/core/index.ts";
 
 test("Locate Source updates the path without replacing the Transcript", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "describer-locate-"));
@@ -12,7 +12,7 @@ test("Locate Source updates the path without replacing the Transcript", async ()
   await writeFile(sourcePath, "");
   await writeFile(movedPath, "");
   try {
-    const describer = await openDescriber({ libraryDir });
+    const describer = await openDescriber({ libraryDir, processor: fixtureProcessor() });
     const project = await describer.importSource(sourcePath, "French");
     await describer.updateProject(project.id, { title: "Weekly standup" });
     const located = await describer.locateSource(project.id, movedPath);
@@ -34,10 +34,10 @@ test("Locate Source persists the new path across launches", async () => {
   await writeFile(sourcePath, "");
   await writeFile(movedPath, "");
   try {
-    const describer = await openDescriber({ libraryDir });
+    const describer = await openDescriber({ libraryDir, processor: fixtureProcessor() });
     const project = await describer.importSource(sourcePath, "English");
     await describer.locateSource(project.id, movedPath);
-    const reopened = await openDescriber({ libraryDir });
+    const reopened = await openDescriber({ libraryDir, processor: fixtureProcessor() });
     expect(reopened.library.projects).toEqual([
       {
         id: project.id,
@@ -59,7 +59,7 @@ test("Locate Source restores playback for a missing Source without re-processing
   const movedPath = path.join(root, "archive", "standup.mp4");
   await writeFile(sourcePath, "");
   try {
-    const describer = await openDescriber({ libraryDir, now: () => 0 });
+    const describer = await openDescriber({ libraryDir, now: () => 0, processor: fixtureProcessor() });
     const project = await describer.importSource(sourcePath, "English");
     await describer.updateProject(project.id, { title: "Weekly standup" });
     await mkdir(path.dirname(movedPath), { recursive: true });
@@ -84,7 +84,7 @@ test("Locate Source on an open Project lets playback start from the new path", a
   await writeFile(sourcePath, "");
   await writeFile(movedPath, "");
   try {
-    const describer = await openDescriber({ libraryDir, now: () => 0 });
+    const describer = await openDescriber({ libraryDir, now: () => 0, processor: fixtureProcessor() });
     const project = await describer.importSource(sourcePath, "English");
     await rm(sourcePath);
     const opened = describer.openProject(project.id);
