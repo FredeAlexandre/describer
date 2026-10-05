@@ -60,6 +60,11 @@ export type Processing = {
 
 export type WordPlacement = "before" | "after";
 
+export type Citation = {
+  readonly plainText: string;
+  readonly markdown: string;
+};
+
 export type OpenedProject = {
   readonly project: Project;
   readonly playback: Playback;
@@ -68,6 +73,8 @@ export type OpenedProject = {
   readonly currentWord: Word | undefined;
   setRate(rate: PlaybackRate): void;
   play(): boolean;
+  playSelection(from: Word, through: Word): boolean;
+  citation(from: Word, through: Word): Citation;
   seekToWord(word: Word): void;
   findInTranscript(query: string): readonly Word[];
   changeWordText(word: Word, text: string): Promise<void>;
@@ -366,6 +373,73 @@ function findPhraseStarts(words: readonly Word[], needle: string): Word[] {
   return hits;
 }
 
+function wordSpan(
+  words: readonly Word[],
+  from: Word,
+  through: Word,
+): { start: Word; end: Word; selected: readonly Word[] } {
+  const fromIndex = words.findIndex((entry) => entry.id === from.id);
+  const throughIndex = words.findIndex((entry) => entry.id === through.id);
+  if (fromIndex < 0) {
+    throw new Error(`Word not found: ${from.id}`);
+  }
+  if (throughIndex < 0) {
+    throw new Error(`Word not found: ${through.id}`);
+  }
+  const startIndex = Math.min(fromIndex, throughIndex);
+  const endIndex = Math.max(fromIndex, throughIndex);
+  const start = words[startIndex];
+  const end = words[endIndex];
+  if (start === undefined || end === undefined) {
+    throw new Error(`Word not found: ${from.id}`);
+  }
+  return { start, end, selected: words.slice(startIndex, endIndex + 1) };
+}
+
+function formatCitationTime(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const rest = total % 60;
+  if (hours > 0) {
+    return `${hours}:${padTime(minutes, 2)}:${padTime(rest, 2)}`;
+  }
+  return `${minutes}:${padTime(rest, 2)}`;
+}
+
+function speakerNamesFor(
+  speakers: readonly Speaker[],
+  words: readonly Word[],
+): string {
+  const byId = new Map(speakers.map((speaker) => [speaker.id, speaker]));
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of words) {
+    if (seen.has(entry.speakerId)) {
+      continue;
+    }
+    seen.add(entry.speakerId);
+    const speaker = byId.get(entry.speakerId);
+    if (speaker !== undefined) {
+      names.push(speaker.name);
+    }
+  }
+  return names.join(", ");
+}
+
+function formatCitation(
+  quote: string,
+  speaker: string,
+  timestamp: string,
+  title: string,
+  recordedAt: string,
+): Citation {
+  return {
+    plainText: `"${quote}"\n${speaker}\n${timestamp}\n${title}\n${recordedAt}`,
+    markdown: `> ${quote}\n\n${speaker} · ${timestamp} · ${title} · ${recordedAt}`,
+  };
+}
+
 function inheritedTimes(
   previous: Word | undefined,
   next: Word | undefined,
@@ -423,25 +497,34 @@ class PlaybackCursor {
   private originMs = 0;
   private originTime = 0;
   private rate: PlaybackRate = 1;
+  private stopAt: number | undefined;
 
   constructor(private readonly now: () => number) {}
 
   get snapshot(): Playback {
+    const currentTime = this.currentTime;
     return {
       playing: this.playing,
-      currentTime: this.currentTime,
+      currentTime,
       rate: this.rate,
     };
   }
 
   get currentTime(): number {
-    if (!this.playing) {
+    const elapsed = this.playing
+      ? this.originTime + ((this.now() - this.originMs) / 1000) * this.rate
+      : this.originTime;
+    if (this.stopAt !== undefined && elapsed >= this.stopAt) {
+      this.playing = false;
+      this.originTime = this.stopAt;
+      this.stopAt = undefined;
       return this.originTime;
     }
-    return this.originTime + ((this.now() - this.originMs) / 1000) * this.rate;
+    return elapsed;
   }
 
-  play(): void {
+  play(until?: number): void {
+    this.stopAt = until;
     if (this.playing) {
       return;
     }
@@ -458,6 +541,7 @@ class PlaybackCursor {
   }
 
   seek(time: number): void {
+    this.stopAt = undefined;
     this.originTime = time;
     if (this.playing) {
       this.originMs = this.now();
@@ -953,6 +1037,32 @@ export async function openDescriber(
           }
           cursor.play();
           return true;
+        },
+        playSelection(from: Word, through: Word): boolean {
+          const current = projects.find((entry) => entry.id === projectId);
+          if (current === undefined || !existsSync(current.sourcePath)) {
+            return false;
+          }
+          const span = wordSpan(storedTranscript().words, from, through);
+          cursor.seek(span.start.start);
+          cursor.play(span.end.end);
+          return true;
+        },
+        citation(from: Word, through: Word): Citation {
+          const current = projects.find((entry) => entry.id === projectId);
+          if (current === undefined) {
+            throw new Error(`Project not found: ${projectId}`);
+          }
+          const stored = storedTranscript();
+          const span = wordSpan(stored.words, from, through);
+          const quote = span.selected.map((entry) => entry.text).join(" ");
+          return formatCitation(
+            quote,
+            speakerNamesFor(stored.speakers, span.selected),
+            formatCitationTime(span.start.start),
+            current.title,
+            current.recordedAt.toISOString().slice(0, 10),
+          );
         },
         seekToWord(word: Word): void {
           cursor.seek(word.start);
