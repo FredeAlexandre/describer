@@ -197,7 +197,7 @@ test("no Word is current during a pause between Words", async () => {
   }
 });
 
-test("the Transcript is not in the Library and not editable until processing finishes", async () => {
+test("the Transcript is not editable until processing finishes", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "describer-transcript-"));
   const libraryDir = path.join(root, "library");
   const sourcePath = path.join(root, "standup.mp4");
@@ -221,7 +221,13 @@ test("the Transcript is not in the Library and not editable until processing fin
     });
     const pending = describer.importSource(sourcePath, "English");
     await ready;
-    expect(describer.library.projects).toEqual([]);
+    expect(describer.library.projects).toHaveLength(1);
+    const queued = describer.library.projects[0];
+    if (queued === undefined) {
+      throw new Error("queued Project missing");
+    }
+    expect(describer.openProject(queued.id).transcript.editable).toBe(false);
+    expect(describer.openProject(queued.id).transcript.utterances).toEqual([]);
     finish({ speakers: [speaker1], words: [hello] });
     const project = await pending;
     expect(describer.library.projects).toEqual([project]);
