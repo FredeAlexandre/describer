@@ -57,6 +57,10 @@ contextBridge.exposeInMainWorld("describer", {
     ipcRenderer.invoke("describer:deleteProject"),
   exportProject: (): Promise<{ library: Library }> =>
     ipcRenderer.invoke("describer:exportProject"),
+  exportSrt: (): Promise<{ library: Library }> =>
+    ipcRenderer.invoke("describer:exportSrt"),
+  exportVtt: (): Promise<{ library: Library }> =>
+    ipcRenderer.invoke("describer:exportVtt"),
   importProject: (): Promise<{ library: Library }> =>
     ipcRenderer.invoke("describer:importProject"),
 });

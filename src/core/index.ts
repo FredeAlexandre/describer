@@ -84,6 +84,8 @@ export type Describer = {
   locateSource(projectId: string, sourcePath: string): Promise<Project>;
   deleteProject(projectId: string): Promise<void>;
   exportProject(projectId: string, destinationPath: string): Promise<void>;
+  exportSrt(projectId: string, destinationPath: string): Promise<void>;
+  exportVtt(projectId: string, destinationPath: string): Promise<void>;
   importProject(projectFilePath: string): Promise<Project>;
   openProject(projectId: string): OpenedProject;
 };
@@ -164,6 +166,91 @@ function sourceHasPicture(sourcePath: string): boolean {
 }
 
 const LONG_PAUSE_SECONDS = 2;
+
+function padTime(value: number, width: number): string {
+  return String(value).padStart(width, "0");
+}
+
+function formatSrtTime(seconds: number): string {
+  return formatCaptionTime(seconds, ",");
+}
+
+function formatVttTime(seconds: number): string {
+  return formatCaptionTime(seconds, ".");
+}
+
+function formatCaptionTime(seconds: number, fractionSep: "," | "."): string {
+  const totalMs = Math.round(seconds * 1000);
+  const hours = Math.floor(totalMs / 3_600_000);
+  const minutes = Math.floor((totalMs % 3_600_000) / 60_000);
+  const secs = Math.floor((totalMs % 60_000) / 1000);
+  const millis = totalMs % 1000;
+  return `${padTime(hours, 2)}:${padTime(minutes, 2)}:${padTime(secs, 2)}${fractionSep}${padTime(millis, 3)}`;
+}
+
+const MAX_CUE_DURATION_SECONDS = 7;
+const MAX_CUE_LENGTH = 42;
+
+type CaptionCue = {
+  readonly start: number;
+  readonly end: number;
+  readonly text: string;
+};
+
+function cueText(words: readonly Word[]): string {
+  return words.map((entry) => entry.text).join(" ");
+}
+
+function wrapCaptionCues(words: readonly Word[]): CaptionCue[] {
+  const cues: CaptionCue[] = [];
+  let current: Word[] = [];
+  for (const entry of words) {
+    const first = current[0];
+    if (
+      first !== undefined &&
+      (entry.end - first.start > MAX_CUE_DURATION_SECONDS ||
+        cueText([...current, entry]).length > MAX_CUE_LENGTH)
+    ) {
+      const last = current[current.length - 1];
+      if (last !== undefined) {
+        cues.push({ start: first.start, end: last.end, text: cueText(current) });
+      }
+      current = [];
+    }
+    current.push(entry);
+  }
+  const first = current[0];
+  const last = current[current.length - 1];
+  if (first !== undefined && last !== undefined) {
+    cues.push({ start: first.start, end: last.end, text: cueText(current) });
+  }
+  return cues;
+}
+
+function formatSrt(cues: readonly CaptionCue[]): string {
+  if (cues.length === 0) {
+    return "";
+  }
+  return cues
+    .map(
+      (cue, index) =>
+        `${index + 1}\n${formatSrtTime(cue.start)} --> ${formatSrtTime(cue.end)}\n${cue.text}\n`,
+    )
+    .join("\n");
+}
+
+function formatVtt(cues: readonly CaptionCue[]): string {
+  if (cues.length === 0) {
+    return "WEBVTT\n";
+  }
+  const body = cues
+    .map(
+      (cue) =>
+        `${formatVttTime(cue.start)} --> ${formatVttTime(cue.end)}\n${cue.text}\n`,
+    )
+    .join("\n");
+  return `WEBVTT\n\n${body}`;
+}
 
 function utterancesFrom(
   speakers: readonly Speaker[],
@@ -492,6 +579,28 @@ export async function openDescriber(
           2,
         )}\n`,
       );
+    },
+    async exportSrt(
+      projectId: string,
+      destinationPath: string,
+    ): Promise<void> {
+      const project = projects.find((entry) => entry.id === projectId);
+      if (project === undefined) {
+        throw new Error(`Project not found: ${projectId}`);
+      }
+      const stored = transcripts.get(project.id) ?? EMPTY_TRANSCRIPT;
+      await writeFile(destinationPath, formatSrt(wrapCaptionCues(stored.words)));
+    },
+    async exportVtt(
+      projectId: string,
+      destinationPath: string,
+    ): Promise<void> {
+      const project = projects.find((entry) => entry.id === projectId);
+      if (project === undefined) {
+        throw new Error(`Project not found: ${projectId}`);
+      }
+      const stored = transcripts.get(project.id) ?? EMPTY_TRANSCRIPT;
+      await writeFile(destinationPath, formatVtt(wrapCaptionCues(stored.words)));
     },
     async importProject(projectFilePath: string): Promise<Project> {
       const raw = await readFile(projectFilePath, "utf8");

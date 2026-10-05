@@ -167,6 +167,40 @@ ipcMain.handle("describer:exportProject", async () => {
   return { library: current.library };
 });
 
+ipcMain.handle("describer:exportSrt", async () => {
+  const current = requireDescriber();
+  if (opened === undefined) {
+    throw new Error("No Project is open");
+  }
+  const picked = await dialog.showSaveDialog(requireWindow(), {
+    title: "Export SRT",
+    defaultPath: `${opened.project.title}.srt`,
+    filters: [{ name: "SRT", extensions: ["srt"] }],
+  });
+  if (picked.canceled || picked.filePath === undefined) {
+    return { library: current.library };
+  }
+  await current.exportSrt(opened.project.id, picked.filePath);
+  return { library: current.library };
+});
+
+ipcMain.handle("describer:exportVtt", async () => {
+  const current = requireDescriber();
+  if (opened === undefined) {
+    throw new Error("No Project is open");
+  }
+  const picked = await dialog.showSaveDialog(requireWindow(), {
+    title: "Export VTT",
+    defaultPath: `${opened.project.title}.vtt`,
+    filters: [{ name: "VTT", extensions: ["vtt"] }],
+  });
+  if (picked.canceled || picked.filePath === undefined) {
+    return { library: current.library };
+  }
+  await current.exportVtt(opened.project.id, picked.filePath);
+  return { library: current.library };
+});
+
 ipcMain.handle("describer:importProject", async () => {
   const current = requireDescriber();
   const picked = await dialog.showOpenDialog(requireWindow(), {
