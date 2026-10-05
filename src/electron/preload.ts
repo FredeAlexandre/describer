@@ -33,4 +33,12 @@ contextBridge.exposeInMainWorld("describer", {
     },
   ): Promise<{ project: Project; library: Library }> =>
     ipcRenderer.invoke("describer:updateProject", projectId, patch),
+  locateSource: (): Promise<{ library: Library; opened: OpenedView }> =>
+    ipcRenderer.invoke("describer:locateSource"),
+  deleteProject: (): Promise<{ library: Library; deleted: boolean }> =>
+    ipcRenderer.invoke("describer:deleteProject"),
+  exportProject: (): Promise<{ library: Library }> =>
+    ipcRenderer.invoke("describer:exportProject"),
+  importProject: (): Promise<{ library: Library }> =>
+    ipcRenderer.invoke("describer:importProject"),
 });

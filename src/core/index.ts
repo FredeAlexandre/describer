@@ -47,6 +47,10 @@ export type Describer = {
       readonly language?: Language;
     },
   ): Promise<Project>;
+  locateSource(projectId: string, sourcePath: string): Promise<Project>;
+  deleteProject(projectId: string): Promise<void>;
+  exportProject(projectId: string, destinationPath: string): Promise<void>;
+  importProject(projectFilePath: string): Promise<Project>;
   openProject(projectId: string): OpenedProject;
 };
 
@@ -55,15 +59,17 @@ export type OpenDescriberOptions = {
   readonly now?: () => number;
 };
 
+type StoredProject = {
+  readonly id: string;
+  readonly title: string;
+  readonly recordedAt: string;
+  readonly language: Language;
+  readonly sourcePath: string;
+};
+
 type StoredLibrary = {
   readonly lastUsedLanguage: Language;
-  readonly projects: ReadonlyArray<{
-    readonly id: string;
-    readonly title: string;
-    readonly recordedAt: string;
-    readonly language: Language;
-    readonly sourcePath: string;
-  }>;
+  readonly projects: ReadonlyArray<StoredProject>;
 };
 
 const VIDEO_EXTENSIONS = new Set([
@@ -138,6 +144,20 @@ function isMissingFile(error: unknown): boolean {
   );
 }
 
+function toStoredProject(project: Project): StoredProject {
+  return {
+    ...project,
+    recordedAt: project.recordedAt.toISOString(),
+  };
+}
+
+function fromStoredProject(project: StoredProject): Project {
+  return {
+    ...project,
+    recordedAt: new Date(project.recordedAt),
+  };
+}
+
 async function loadLibrary(libraryDir: string): Promise<{
   lastUsedLanguage: Language;
   projects: Project[];
@@ -147,13 +167,7 @@ async function loadLibrary(libraryDir: string): Promise<{
     const stored = JSON.parse(raw) as StoredLibrary;
     return {
       lastUsedLanguage: stored.lastUsedLanguage,
-      projects: stored.projects.map((project) => ({
-        id: project.id,
-        title: project.title,
-        recordedAt: new Date(project.recordedAt),
-        language: project.language,
-        sourcePath: project.sourcePath,
-      })),
+      projects: stored.projects.map(fromStoredProject),
     };
   } catch (error) {
     if (isMissingFile(error)) {
@@ -177,13 +191,7 @@ export async function openDescriber(
   async function persist(): Promise<void> {
     const stored: StoredLibrary = {
       lastUsedLanguage,
-      projects: projects.map((project) => ({
-        id: project.id,
-        title: project.title,
-        recordedAt: project.recordedAt.toISOString(),
-        language: project.language,
-        sourcePath: project.sourcePath,
-      })),
+      projects: projects.map(toStoredProject),
     };
     await writeFile(libraryFile(libraryDir), `${JSON.stringify(stored, null, 2)}\n`);
   }
@@ -230,15 +238,67 @@ export async function openDescriber(
         throw new Error(`Project not found: ${projectId}`);
       }
       const updated: Project = {
-        id: current.id,
+        ...current,
         title: patch.title ?? current.title,
         recordedAt: patch.recordedAt ?? current.recordedAt,
         language: patch.language ?? current.language,
-        sourcePath: current.sourcePath,
       };
       projects[index] = updated;
       await persist();
       return updated;
+    },
+    async locateSource(
+      projectId: string,
+      sourcePath: string,
+    ): Promise<Project> {
+      const index = projects.findIndex((project) => project.id === projectId);
+      if (index < 0) {
+        throw new Error(`Project not found: ${projectId}`);
+      }
+      const current = projects[index];
+      if (current === undefined) {
+        throw new Error(`Project not found: ${projectId}`);
+      }
+      await stat(sourcePath);
+      const updated: Project = {
+        ...current,
+        sourcePath,
+      };
+      projects[index] = updated;
+      await persist();
+      return updated;
+    },
+    async deleteProject(projectId: string): Promise<void> {
+      const index = projects.findIndex((project) => project.id === projectId);
+      if (index < 0) {
+        throw new Error(`Project not found: ${projectId}`);
+      }
+      projects.splice(index, 1);
+      await persist();
+    },
+    async exportProject(
+      projectId: string,
+      destinationPath: string,
+    ): Promise<void> {
+      const project = projects.find((entry) => entry.id === projectId);
+      if (project === undefined) {
+        throw new Error(`Project not found: ${projectId}`);
+      }
+      await writeFile(
+        destinationPath,
+        `${JSON.stringify(toStoredProject(project), null, 2)}\n`,
+      );
+    },
+    async importProject(projectFilePath: string): Promise<Project> {
+      const raw = await readFile(projectFilePath, "utf8");
+      const stored = JSON.parse(raw) as StoredProject;
+      const project: Project = {
+        ...fromStoredProject(stored),
+        id: randomUUID(),
+      };
+      projects.push(project);
+      await persist();
+      return project;
     },
     openProject(projectId: string): OpenedProject {
       const project = projects.find((entry) => entry.id === projectId);
@@ -258,7 +318,13 @@ export async function openDescriber(
           }
           return current;
         },
-        hasPicture: sourcePresent && sourceHasPicture(project.sourcePath),
+        get hasPicture(): boolean {
+          const current = projects.find((entry) => entry.id === projectId);
+          if (current === undefined) {
+            return false;
+          }
+          return existsSync(current.sourcePath) && sourceHasPicture(current.sourcePath);
+        },
         get playback(): Playback {
           return cursor.snapshot;
         },
@@ -266,7 +332,8 @@ export async function openDescriber(
           cursor.setRate(rate);
         },
         play(): boolean {
-          if (!existsSync(project.sourcePath)) {
+          const current = projects.find((entry) => entry.id === projectId);
+          if (current === undefined || !existsSync(current.sourcePath)) {
             return false;
           }
           cursor.play();

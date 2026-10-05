@@ -44,6 +44,10 @@ declare global {
           readonly language?: Language;
         },
       ) => Promise<{ project: ProjectView; library: LibraryView }>;
+      locateSource: () => Promise<{ library: LibraryView; opened: OpenedView }>;
+      deleteProject: () => Promise<{ library: LibraryView; deleted: boolean }>;
+      exportProject: () => Promise<{ library: LibraryView }>;
+      importProject: () => Promise<{ library: LibraryView }>;
     };
   }
 }
@@ -87,6 +91,38 @@ async function importSource(): Promise<void> {
   library = result.library;
   importLanguage = library.lastUsedLanguage;
   render();
+}
+
+async function importProject(): Promise<void> {
+  const result = await window.describer.importProject();
+  library = result.library;
+  render();
+}
+
+async function locateSource(): Promise<void> {
+  const result = await window.describer.locateSource();
+  library = result.library;
+  opened = result.opened;
+  render();
+  const media = mediaElement();
+  if (media !== null && opened.sourceUrl !== null) {
+    media.playbackRate = opened.playback.rate;
+    void media.play();
+  }
+}
+
+async function deleteProject(): Promise<void> {
+  const result = await window.describer.deleteProject();
+  library = result.library;
+  if (result.deleted) {
+    opened = undefined;
+  }
+  render();
+}
+
+async function exportProject(): Promise<void> {
+  const result = await window.describer.exportProject();
+  library = result.library;
 }
 
 async function openProject(projectId: string): Promise<void> {
@@ -160,7 +196,14 @@ function renderLibraryList(root: HTMLElement): void {
     void importSource();
   });
 
-  importRow.append(language, importButton);
+  const openProjectFile = document.createElement("button");
+  openProjectFile.type = "button";
+  openProjectFile.textContent = "Open Project file";
+  openProjectFile.addEventListener("click", () => {
+    void importProject();
+  });
+
+  importRow.append(language, importButton, openProjectFile);
   root.append(importRow);
 
   if (library.projects.length === 0) {
@@ -231,6 +274,33 @@ function renderPlayer(root: HTMLElement): void {
   });
 
   pane.append(title, recordedAt, language);
+
+  const actions = document.createElement("div");
+  actions.className = "import";
+
+  const locateButton = document.createElement("button");
+  locateButton.type = "button";
+  locateButton.textContent = "Locate Source";
+  locateButton.addEventListener("click", () => {
+    void locateSource();
+  });
+
+  const exportButton = document.createElement("button");
+  exportButton.type = "button";
+  exportButton.textContent = "Export Project";
+  exportButton.addEventListener("click", () => {
+    void exportProject();
+  });
+
+  const deleteButton = document.createElement("button");
+  deleteButton.type = "button";
+  deleteButton.textContent = "Delete";
+  deleteButton.addEventListener("click", () => {
+    void deleteProject();
+  });
+
+  actions.append(locateButton, exportButton, deleteButton);
+  pane.append(actions);
 
   if (opened.sourceUrl === null) {
     const missing = document.createElement("p");
