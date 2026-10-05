@@ -57,6 +57,8 @@ export type Processing = {
   readonly progress: number;
 };
 
+export type WordPlacement = "before" | "after";
+
 export type OpenedProject = {
   readonly project: Project;
   readonly playback: Playback;
@@ -67,6 +69,16 @@ export type OpenedProject = {
   play(): boolean;
   seekToWord(word: Word): void;
   findInTranscript(query: string): readonly Word[];
+  changeWordText(word: Word, text: string): Promise<void>;
+  deleteWord(word: Word): Promise<void>;
+  insertWord(
+    neighbor: Word,
+    text: string,
+    placement: WordPlacement,
+  ): Promise<Word>;
+  insertParagraphBreak(word: Word): Promise<void>;
+  undo(): Promise<boolean>;
+  redo(): Promise<boolean>;
 };
 
 export type SearchHit = {
@@ -298,6 +310,28 @@ function findPhraseStarts(words: readonly Word[], needle: string): Word[] {
     from = index + 1;
   }
   return hits;
+}
+
+function inheritedTimes(
+  previous: Word | undefined,
+  next: Word | undefined,
+  neighbor: Word,
+): { start: number; end: number } {
+  if (
+    previous !== undefined &&
+    next !== undefined &&
+    next.start > previous.end
+  ) {
+    return { start: previous.end, end: next.start };
+  }
+  return { start: neighbor.start, end: neighbor.end };
+}
+
+function snapshotTranscript(stored: StoredTranscript): StoredTranscript {
+  return {
+    speakers: stored.speakers.map((speaker) => ({ ...speaker })),
+    words: stored.words.map((word) => ({ ...word })),
+  };
 }
 
 function utterancesFrom(
@@ -699,10 +733,22 @@ export async function openDescriber(
       }
       const cursor = new PlaybackCursor(now);
       const sourcePresent = existsSync(project.sourcePath);
-      const stored = transcripts.get(projectId) ?? {
-        speakers: [],
-        words: [],
-      };
+      function storedTranscript(): StoredTranscript {
+        return (
+          transcripts.get(projectId) ?? {
+            speakers: [],
+            words: [],
+          }
+        );
+      }
+      const undoStack: StoredTranscript[] = [];
+      const redoStack: StoredTranscript[] = [];
+      async function applyEdit(next: StoredTranscript): Promise<void> {
+        undoStack.push(snapshotTranscript(storedTranscript()));
+        redoStack.length = 0;
+        transcripts.set(projectId, next);
+        await persist();
+      }
       if (sourcePresent) {
         cursor.play();
       }
@@ -725,6 +771,7 @@ export async function openDescriber(
           return cursor.snapshot;
         },
         get transcript(): Transcript {
+          const stored = storedTranscript();
           return {
             utterances: utterancesFrom(stored.speakers, stored.words),
             editable: true,
@@ -732,7 +779,7 @@ export async function openDescriber(
         },
         get currentWord(): Word | undefined {
           const time = cursor.currentTime;
-          return stored.words.find(
+          return storedTranscript().words.find(
             (word) => word.start <= time && time < word.end,
           );
         },
@@ -755,7 +802,106 @@ export async function openDescriber(
           if (needle.length === 0) {
             return [];
           }
-          return findPhraseStarts(stored.words, needle);
+          return findPhraseStarts(storedTranscript().words, needle);
+        },
+        async changeWordText(word: Word, text: string): Promise<void> {
+          const stored = storedTranscript();
+          const index = stored.words.findIndex((entry) => entry.id === word.id);
+          if (index < 0) {
+            throw new Error(`Word not found: ${word.id}`);
+          }
+          const current = stored.words[index];
+          if (current !== undefined && current.text === text) {
+            return;
+          }
+          await applyEdit({
+            speakers: stored.speakers,
+            words: stored.words.map((entry, wordIndex) =>
+              wordIndex === index ? { ...entry, text } : entry,
+            ),
+          });
+        },
+        async deleteWord(word: Word): Promise<void> {
+          const stored = storedTranscript();
+          const index = stored.words.findIndex((entry) => entry.id === word.id);
+          if (index < 0) {
+            throw new Error(`Word not found: ${word.id}`);
+          }
+          await applyEdit({
+            speakers: stored.speakers,
+            words: stored.words.filter((entry) => entry.id !== word.id),
+          });
+        },
+        async insertWord(
+          neighbor: Word,
+          text: string,
+          placement: WordPlacement,
+        ): Promise<Word> {
+          const stored = storedTranscript();
+          const index = stored.words.findIndex(
+            (entry) => entry.id === neighbor.id,
+          );
+          if (index < 0) {
+            throw new Error(`Word not found: ${neighbor.id}`);
+          }
+          const insertAt = placement === "before" ? index : index + 1;
+          const previous = stored.words[insertAt - 1];
+          const next = stored.words[insertAt];
+          const times = inheritedTimes(previous, next, neighbor);
+          const inserted: Word = {
+            id: randomUUID(),
+            text,
+            start: times.start,
+            end: times.end,
+            speakerId: neighbor.speakerId,
+            paragraphBreakBefore: false,
+          };
+          const words = [...stored.words];
+          words.splice(insertAt, 0, inserted);
+          await applyEdit({
+            speakers: stored.speakers,
+            words,
+          });
+          return inserted;
+        },
+        async insertParagraphBreak(word: Word): Promise<void> {
+          const stored = storedTranscript();
+          const index = stored.words.findIndex((entry) => entry.id === word.id);
+          if (index < 0) {
+            throw new Error(`Word not found: ${word.id}`);
+          }
+          const current = stored.words[index];
+          if (current?.paragraphBreakBefore === true) {
+            return;
+          }
+          await applyEdit({
+            speakers: stored.speakers,
+            words: stored.words.map((entry, wordIndex) =>
+              wordIndex === index
+                ? { ...entry, paragraphBreakBefore: true }
+                : entry,
+            ),
+          });
+        },
+        async undo(): Promise<boolean> {
+          const previous = undoStack.pop();
+          if (previous === undefined) {
+            return false;
+          }
+          redoStack.push(snapshotTranscript(storedTranscript()));
+          transcripts.set(projectId, previous);
+          await persist();
+          return true;
+        },
+        async redo(): Promise<boolean> {
+          const next = redoStack.pop();
+          if (next === undefined) {
+            return false;
+          }
+          undoStack.push(snapshotTranscript(storedTranscript()));
+          transcripts.set(projectId, next);
+          await persist();
+          return true;
         },
       };
     },

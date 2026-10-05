@@ -8,6 +8,7 @@ import type {
   Project,
   Transcript,
   Word,
+  WordPlacement,
 } from "../core/index.js";
 
 export type SearchHitView = {
@@ -22,6 +23,10 @@ export type OpenedView = {
   readonly sourceUrl: string | null;
   readonly transcript: Transcript;
   readonly currentWord: Word | null;
+};
+
+export type InsertedWordView = OpenedView & {
+  readonly inserted: Word;
 };
 
 contextBridge.exposeInMainWorld("describer", {
@@ -47,6 +52,20 @@ contextBridge.exposeInMainWorld("describer", {
     ipcRenderer.invoke("describer:setRate", rate),
   seekToWord: (wordId: string): Promise<OpenedView> =>
     ipcRenderer.invoke("describer:seekToWord", wordId),
+  changeWordText: (wordId: string, text: string): Promise<OpenedView> =>
+    ipcRenderer.invoke("describer:changeWordText", wordId, text),
+  deleteWord: (wordId: string): Promise<OpenedView> =>
+    ipcRenderer.invoke("describer:deleteWord", wordId),
+  insertWord: (
+    neighborId: string,
+    text: string,
+    placement: WordPlacement,
+  ): Promise<InsertedWordView> =>
+    ipcRenderer.invoke("describer:insertWord", neighborId, text, placement),
+  insertParagraphBreak: (wordId: string): Promise<OpenedView> =>
+    ipcRenderer.invoke("describer:insertParagraphBreak", wordId),
+  undo: (): Promise<OpenedView> => ipcRenderer.invoke("describer:undo"),
+  redo: (): Promise<OpenedView> => ipcRenderer.invoke("describer:redo"),
   updateProject: (
     projectId: string,
     patch: {
