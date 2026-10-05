@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
+  Citation,
   Language,
   Library,
   Playback,
@@ -65,6 +66,14 @@ contextBridge.exposeInMainWorld("describer", {
     reprocessed: boolean;
   }> => ipcRenderer.invoke("describer:reprocessProject"),
   play: (): Promise<boolean> => ipcRenderer.invoke("describer:play"),
+  playSelection: (fromId: string, throughId: string): Promise<boolean> =>
+    ipcRenderer.invoke("describer:playSelection", fromId, throughId),
+  copyCitation: (
+    fromId: string,
+    throughId: string,
+    asMarkdown: boolean,
+  ): Promise<Citation> =>
+    ipcRenderer.invoke("describer:copyCitation", fromId, throughId, asMarkdown),
   setRate: (rate: PlaybackRate): Promise<Playback> =>
     ipcRenderer.invoke("describer:setRate", rate),
   seekToWord: (wordId: string): Promise<OpenedView> =>
@@ -90,6 +99,8 @@ contextBridge.exposeInMainWorld("describer", {
     speaker: Speaker,
   ): Promise<OpenedView> =>
     ipcRenderer.invoke("describer:reassignWords", wordIds, speaker),
+  acceptSpeakerSuggestion: (speakerId: string): Promise<OpenedView> =>
+    ipcRenderer.invoke("describer:acceptSpeakerSuggestion", speakerId),
   undo: (): Promise<OpenedView> => ipcRenderer.invoke("describer:undo"),
   redo: (): Promise<OpenedView> => ipcRenderer.invoke("describer:redo"),
   updateProject: (

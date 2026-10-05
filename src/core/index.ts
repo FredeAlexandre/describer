@@ -35,6 +35,16 @@ export type Speaker = {
   readonly name: string;
 };
 
+export type SpeakerSuggestion = {
+  readonly speaker: Speaker;
+  readonly suggestedName: string;
+};
+
+export type SpeakerEmbedding = {
+  readonly speakerId: string;
+  readonly embedding: readonly number[];
+};
+
 export type Word = {
   readonly id: string;
   readonly text: string;
@@ -53,6 +63,7 @@ export type Transcript = {
   readonly utterances: readonly Utterance[];
   readonly editable: boolean;
   readonly speakers: readonly Speaker[];
+  readonly speakerSuggestions: readonly SpeakerSuggestion[];
 };
 
 export type Processing = {
@@ -60,6 +71,11 @@ export type Processing = {
 };
 
 export type WordPlacement = "before" | "after";
+
+export type Citation = {
+  readonly plainText: string;
+  readonly markdown: string;
+};
 
 export type OpenedProject = {
   readonly project: Project;
@@ -69,6 +85,8 @@ export type OpenedProject = {
   readonly currentWord: Word | undefined;
   setRate(rate: PlaybackRate): void;
   play(): boolean;
+  playSelection(from: Word, through: Word): boolean;
+  citation(from: Word, through: Word): Citation;
   seekToWord(word: Word): void;
   findInTranscript(query: string): readonly Word[];
   changeWordText(word: Word, text: string): Promise<void>;
@@ -82,6 +100,7 @@ export type OpenedProject = {
   renameSpeaker(speaker: Speaker, name: string): Promise<void>;
   mergeSpeakers(from: Speaker, into: Speaker): Promise<void>;
   reassignWords(words: readonly Word[], speaker: Speaker): Promise<void>;
+  acceptSpeakerSuggestion(speaker: Speaker): Promise<void>;
   undo(): Promise<boolean>;
   redo(): Promise<boolean>;
 };
@@ -120,6 +139,7 @@ export type Describer = {
 export type ProcessorResult = {
   readonly speakers: readonly Speaker[];
   readonly words: readonly Word[];
+  readonly embeddings?: readonly SpeakerEmbedding[];
 };
 
 export type ProcessorControls = {
@@ -138,6 +158,7 @@ export type Processor = {
 export function fixtureProcessor(
   words: readonly Word[] = [],
   speakers?: readonly Speaker[],
+  embeddings: readonly SpeakerEmbedding[] = [],
 ): Processor {
   const resolvedSpeakers =
     speakers ??
@@ -151,7 +172,7 @@ export function fixtureProcessor(
         throw new Error("Processing cancelled");
       }
       controls?.onProgress(1);
-      return { speakers: resolvedSpeakers, words };
+      return { speakers: resolvedSpeakers, words, embeddings };
     },
   };
 }
@@ -162,6 +183,16 @@ export type OpenDescriberOptions = {
   readonly processor?: Processor;
 };
 
+type StoredSpeakerSuggestion = {
+  readonly speakerId: string;
+  readonly suggestedName: string;
+};
+
+type StoredVoice = {
+  readonly name: string;
+  readonly embedding: readonly number[];
+};
+
 type StoredProject = {
   readonly id: string;
   readonly title: string;
@@ -170,22 +201,42 @@ type StoredProject = {
   readonly sourcePath: string;
   readonly speakers?: readonly Speaker[];
   readonly words?: readonly Word[];
+  readonly embeddings?: readonly SpeakerEmbedding[];
+  readonly speakerSuggestions?: readonly StoredSpeakerSuggestion[];
 };
 
 type StoredLibrary = {
   readonly lastUsedLanguage: Language;
   readonly projects: ReadonlyArray<StoredProject>;
+  readonly voices?: readonly StoredVoice[];
 };
 
 type StoredTranscript = {
   readonly speakers: readonly Speaker[];
   readonly words: readonly Word[];
+  readonly embeddings: readonly SpeakerEmbedding[];
+  readonly speakerSuggestions: readonly StoredSpeakerSuggestion[];
 };
 
-const EMPTY_TRANSCRIPT: StoredTranscript = { speakers: [], words: [] };
+const EMPTY_TRANSCRIPT: StoredTranscript = {
+  speakers: [],
+  words: [],
+  embeddings: [],
+  speakerSuggestions: [],
+};
 
-function storedFromProcessed(processed: ProcessorResult): StoredTranscript {
+const DEFAULT_SPEAKER_NAME = /^Speaker \d+$/;
+const VOICE_MATCH_COSINE = 0.65;
+
+function storedFromProcessed(
+  processed: ProcessorResult,
+  voices: readonly StoredVoice[],
+): StoredTranscript {
   utterancesFrom(processed.speakers, processed.words);
+  const embeddings = (processed.embeddings ?? []).map((entry) => ({
+    speakerId: entry.speakerId,
+    embedding: [...entry.embedding],
+  }));
   return {
     speakers: processed.speakers.map((speaker) => ({ ...speaker })),
     words: processed.words.map((word) => ({
@@ -196,6 +247,8 @@ function storedFromProcessed(processed: ProcessorResult): StoredTranscript {
       speakerId: word.speakerId,
       paragraphBreakBefore: word.paragraphBreakBefore === true,
     })),
+    embeddings,
+    speakerSuggestions: matchVoices(embeddings, voices),
   };
 }
 
@@ -433,6 +486,73 @@ function findPhraseStarts(words: readonly Word[], needle: string): Word[] {
   return hits;
 }
 
+function wordSpan(
+  words: readonly Word[],
+  from: Word,
+  through: Word,
+): { start: Word; end: Word; selected: readonly Word[] } {
+  const fromIndex = words.findIndex((entry) => entry.id === from.id);
+  const throughIndex = words.findIndex((entry) => entry.id === through.id);
+  if (fromIndex < 0) {
+    throw new Error(`Word not found: ${from.id}`);
+  }
+  if (throughIndex < 0) {
+    throw new Error(`Word not found: ${through.id}`);
+  }
+  const startIndex = Math.min(fromIndex, throughIndex);
+  const endIndex = Math.max(fromIndex, throughIndex);
+  const start = words[startIndex];
+  const end = words[endIndex];
+  if (start === undefined || end === undefined) {
+    throw new Error(`Word not found: ${from.id}`);
+  }
+  return { start, end, selected: words.slice(startIndex, endIndex + 1) };
+}
+
+function formatCitationTime(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const rest = total % 60;
+  if (hours > 0) {
+    return `${hours}:${padTime(minutes, 2)}:${padTime(rest, 2)}`;
+  }
+  return `${minutes}:${padTime(rest, 2)}`;
+}
+
+function speakerNamesFor(
+  speakers: readonly Speaker[],
+  words: readonly Word[],
+): string {
+  const byId = new Map(speakers.map((speaker) => [speaker.id, speaker]));
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of words) {
+    if (seen.has(entry.speakerId)) {
+      continue;
+    }
+    seen.add(entry.speakerId);
+    const speaker = byId.get(entry.speakerId);
+    if (speaker !== undefined) {
+      names.push(speaker.name);
+    }
+  }
+  return names.join(", ");
+}
+
+function formatCitation(
+  quote: string,
+  speaker: string,
+  timestamp: string,
+  title: string,
+  recordedAt: string,
+): Citation {
+  return {
+    plainText: `"${quote}"\n${speaker}\n${timestamp}\n${title}\n${recordedAt}`,
+    markdown: `> ${quote}\n\n${speaker} · ${timestamp} · ${title} · ${recordedAt}`,
+  };
+}
+
 function inheritedTimes(
   previous: Word | undefined,
   next: Word | undefined,
@@ -452,7 +572,74 @@ function snapshotTranscript(stored: StoredTranscript): StoredTranscript {
   return {
     speakers: stored.speakers.map((speaker) => ({ ...speaker })),
     words: stored.words.map((word) => ({ ...word })),
+    embeddings: stored.embeddings.map((entry) => ({
+      speakerId: entry.speakerId,
+      embedding: [...entry.embedding],
+    })),
+    speakerSuggestions: stored.speakerSuggestions.map((entry) => ({
+      ...entry,
+    })),
   };
+}
+
+function cosineSimilarity(a: readonly number[], b: readonly number[]): number {
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i += 1) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    dot += x * y;
+    normA += x * x;
+    normB += y * y;
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  return denom === 0 ? 0 : dot / denom;
+}
+
+function isDefaultSpeakerName(name: string): boolean {
+  return DEFAULT_SPEAKER_NAME.test(name);
+}
+
+function matchVoices(
+  embeddings: readonly SpeakerEmbedding[],
+  voices: readonly StoredVoice[],
+): StoredSpeakerSuggestion[] {
+  type Pair = {
+    readonly speakerId: string;
+    readonly name: string;
+    readonly similarity: number;
+  };
+  const pairs: Pair[] = [];
+  for (const embedding of embeddings) {
+    for (const voice of voices) {
+      const similarity = cosineSimilarity(embedding.embedding, voice.embedding);
+      if (similarity >= VOICE_MATCH_COSINE) {
+        pairs.push({
+          speakerId: embedding.speakerId,
+          name: voice.name,
+          similarity,
+        });
+      }
+    }
+  }
+  pairs.sort((left, right) => right.similarity - left.similarity);
+  const usedSpeakers = new Set<string>();
+  const usedVoices = new Set<string>();
+  const suggestions: StoredSpeakerSuggestion[] = [];
+  for (const pair of pairs) {
+    if (usedSpeakers.has(pair.speakerId) || usedVoices.has(pair.name)) {
+      continue;
+    }
+    usedSpeakers.add(pair.speakerId);
+    usedVoices.add(pair.name);
+    suggestions.push({
+      speakerId: pair.speakerId,
+      suggestedName: pair.name,
+    });
+  }
+  return suggestions;
 }
 
 function utterancesFrom(
@@ -490,25 +677,34 @@ class PlaybackCursor {
   private originMs = 0;
   private originTime = 0;
   private rate: PlaybackRate = 1;
+  private stopAt: number | undefined;
 
   constructor(private readonly now: () => number) {}
 
   get snapshot(): Playback {
+    const currentTime = this.currentTime;
     return {
       playing: this.playing,
-      currentTime: this.currentTime,
+      currentTime,
       rate: this.rate,
     };
   }
 
   get currentTime(): number {
-    if (!this.playing) {
+    const elapsed = this.playing
+      ? this.originTime + ((this.now() - this.originMs) / 1000) * this.rate
+      : this.originTime;
+    if (this.stopAt !== undefined && elapsed >= this.stopAt) {
+      this.playing = false;
+      this.originTime = this.stopAt;
+      this.stopAt = undefined;
       return this.originTime;
     }
-    return this.originTime + ((this.now() - this.originMs) / 1000) * this.rate;
+    return elapsed;
   }
 
-  play(): void {
+  play(until?: number): void {
+    this.stopAt = until;
     if (this.playing) {
       return;
     }
@@ -525,6 +721,7 @@ class PlaybackCursor {
   }
 
   seek(time: number): void {
+    this.stopAt = undefined;
     this.originTime = time;
     if (this.playing) {
       this.originMs = this.now();
@@ -564,6 +761,8 @@ function toStoredProject(
     sourcePath: project.sourcePath,
     speakers: transcript.speakers,
     words: transcript.words,
+    embeddings: transcript.embeddings,
+    speakerSuggestions: transcript.speakerSuggestions,
   };
 }
 
@@ -584,16 +783,16 @@ function transcriptFromStored(project: StoredProject): StoredTranscript {
       ...word,
       paragraphBreakBefore: word.paragraphBreakBefore === true,
     })),
+    embeddings: project.embeddings ?? [],
+    speakerSuggestions: project.speakerSuggestions ?? [],
   };
 }
 
 async function loadLibrary(libraryDir: string): Promise<{
   lastUsedLanguage: Language;
   projects: Project[];
-  transcripts: Map<
-    string,
-    { speakers: readonly Speaker[]; words: readonly Word[] }
-  >;
+  transcripts: Map<string, StoredTranscript>;
+  voices: StoredVoice[];
 }> {
   try {
     const raw = await readFile(libraryFile(libraryDir), "utf8");
@@ -607,6 +806,10 @@ async function loadLibrary(libraryDir: string): Promise<{
       lastUsedLanguage: stored.lastUsedLanguage,
       projects,
       transcripts,
+      voices: (stored.voices ?? []).map((voice) => ({
+        name: voice.name,
+        embedding: [...voice.embedding],
+      })),
     };
   } catch (error) {
     if (isMissingFile(error)) {
@@ -614,6 +817,7 @@ async function loadLibrary(libraryDir: string): Promise<{
         lastUsedLanguage: "English",
         projects: [],
         transcripts: new Map(),
+        voices: [],
       };
     }
     throw error;
@@ -629,6 +833,7 @@ export async function openDescriber(
   const loaded = await loadLibrary(libraryDir);
   const projects: Project[] = loaded.projects;
   const transcripts = loaded.transcripts;
+  let voices: StoredVoice[] = loaded.voices;
   let lastUsedLanguage: Language = loaded.lastUsedLanguage;
   const now = options.now ?? Date.now;
   const processor = options.processor ?? onDeviceProcessor();
@@ -664,8 +869,25 @@ export async function openDescriber(
         .map((project) =>
           toStoredProject(project, transcripts.get(project.id) ?? EMPTY_TRANSCRIPT),
         ),
+      voices,
     };
     await writeFile(libraryFile(libraryDir), `${JSON.stringify(stored, null, 2)}\n`);
+  }
+
+  function rememberVoice(name: string, embedding: readonly number[]): void {
+    const trimmed = name.trim();
+    if (trimmed.length === 0 || isDefaultSpeakerName(trimmed)) {
+      return;
+    }
+    const next: StoredVoice = { name: trimmed, embedding: [...embedding] };
+    voices = [
+      ...voices.filter(
+        (voice) =>
+          voice.name !== trimmed &&
+          cosineSimilarity(voice.embedding, embedding) < VOICE_MATCH_COSINE,
+      ),
+      next,
+    ];
   }
 
   function listedProjects(): Project[] {
@@ -743,7 +965,7 @@ export async function openDescriber(
       return enqueueProcess(async () => {
         try {
           const processed = await runProcessor(sourcePath, language);
-          transcripts.set(project.id, storedFromProcessed(processed));
+          transcripts.set(project.id, storedFromProcessed(processed, voices));
           lockedProjects.delete(project.id);
           unpersistedProjects.delete(project.id);
           lastUsedLanguage = language;
@@ -925,7 +1147,7 @@ export async function openDescriber(
             current.sourcePath,
             current.language,
           );
-          transcripts.set(current.id, storedFromProcessed(processed));
+          transcripts.set(current.id, storedFromProcessed(processed, voices));
           lockedProjects.delete(current.id);
           await persist();
           return current;
@@ -971,12 +1193,7 @@ export async function openDescriber(
         return epochOf(projectId) === handleEpoch;
       }
       function storedTranscript(): StoredTranscript {
-        return (
-          transcripts.get(projectId) ?? {
-            speakers: [],
-            words: [],
-          }
-        );
+        return transcripts.get(projectId) ?? EMPTY_TRANSCRIPT;
       }
       const undoStack: StoredTranscript[] = [];
       const redoStack: StoredTranscript[] = [];
@@ -1015,10 +1232,27 @@ export async function openDescriber(
         },
         get transcript(): Transcript {
           const stored = storedTranscript();
+          const speakersById = new Map(
+            stored.speakers.map((speaker) => [speaker.id, speaker]),
+          );
           return {
             utterances: utterancesFrom(stored.speakers, stored.words),
             editable: !lockedProjects.has(projectId),
             speakers: stored.speakers,
+            speakerSuggestions: stored.speakerSuggestions.flatMap(
+              (suggestion) => {
+                const speaker = speakersById.get(suggestion.speakerId);
+                if (speaker === undefined) {
+                  return [];
+                }
+                return [
+                  {
+                    speaker,
+                    suggestedName: suggestion.suggestedName,
+                  },
+                ];
+              },
+            ),
           };
         },
         get currentWord(): Word | undefined {
@@ -1037,6 +1271,32 @@ export async function openDescriber(
           }
           cursor.play();
           return true;
+        },
+        playSelection(from: Word, through: Word): boolean {
+          const current = projects.find((entry) => entry.id === projectId);
+          if (current === undefined || !existsSync(current.sourcePath)) {
+            return false;
+          }
+          const span = wordSpan(storedTranscript().words, from, through);
+          cursor.seek(span.start.start);
+          cursor.play(span.end.end);
+          return true;
+        },
+        citation(from: Word, through: Word): Citation {
+          const current = projects.find((entry) => entry.id === projectId);
+          if (current === undefined) {
+            throw new Error(`Project not found: ${projectId}`);
+          }
+          const stored = storedTranscript();
+          const span = wordSpan(stored.words, from, through);
+          const quote = span.selected.map((entry) => entry.text).join(" ");
+          return formatCitation(
+            quote,
+            speakerNamesFor(stored.speakers, span.selected),
+            formatCitationTime(span.start.start),
+            current.title,
+            current.recordedAt.toISOString().slice(0, 10),
+          );
         },
         seekToWord(word: Word): void {
           cursor.seek(word.start);
@@ -1059,6 +1319,7 @@ export async function openDescriber(
             return;
           }
           await applyEdit({
+            ...stored,
             speakers: stored.speakers,
             words: stored.words.map((entry, wordIndex) =>
               wordIndex === index ? { ...entry, text } : entry,
@@ -1072,6 +1333,7 @@ export async function openDescriber(
             throw new Error(`Word not found: ${word.id}`);
           }
           await applyEdit({
+            ...stored,
             speakers: stored.speakers,
             words: stored.words.filter((entry) => entry.id !== word.id),
           });
@@ -1103,6 +1365,7 @@ export async function openDescriber(
           const words = [...stored.words];
           words.splice(insertAt, 0, inserted);
           await applyEdit({
+            ...stored,
             speakers: stored.speakers,
             words,
           });
@@ -1119,6 +1382,7 @@ export async function openDescriber(
             return;
           }
           await applyEdit({
+            ...stored,
             speakers: stored.speakers,
             words: stored.words.map((entry, wordIndex) =>
               wordIndex === index
@@ -1139,11 +1403,21 @@ export async function openDescriber(
           if (current !== undefined && current.name === name) {
             return;
           }
+          const embedding = stored.embeddings.find(
+            (entry) => entry.speakerId === speaker.id,
+          )?.embedding;
+          if (embedding !== undefined) {
+            rememberVoice(name, embedding);
+          }
           await applyEdit({
+            ...stored,
             speakers: stored.speakers.map((entry, speakerIndex) =>
               speakerIndex === index ? { ...entry, name } : entry,
             ),
             words: stored.words,
+            speakerSuggestions: stored.speakerSuggestions.filter(
+              (entry) => entry.speakerId !== speaker.id,
+            ),
           });
         },
         async mergeSpeakers(from: Speaker, into: Speaker): Promise<void> {
@@ -1158,11 +1432,18 @@ export async function openDescriber(
             throw new Error(`Speaker not found: ${into.id}`);
           }
           await applyEdit({
+            ...stored,
             speakers: stored.speakers.filter((entry) => entry.id !== from.id),
             words: stored.words.map((entry) =>
               entry.speakerId === from.id
                 ? { ...entry, speakerId: into.id }
                 : entry,
+            ),
+            embeddings: stored.embeddings.filter(
+              (entry) => entry.speakerId !== from.id,
+            ),
+            speakerSuggestions: stored.speakerSuggestions.filter(
+              (entry) => entry.speakerId !== from.id,
             ),
           });
         },
@@ -1192,6 +1473,7 @@ export async function openDescriber(
             return;
           }
           await applyEdit({
+            ...stored,
             speakers: speakerKnown
               ? stored.speakers
               : [...stored.speakers, { id: speaker.id, name: speaker.name }],
@@ -1199,6 +1481,16 @@ export async function openDescriber(
               ids.has(entry.id) ? { ...entry, speakerId: speaker.id } : entry,
             ),
           });
+        },
+        async acceptSpeakerSuggestion(speaker: Speaker): Promise<void> {
+          const stored = storedTranscript();
+          const suggestion = stored.speakerSuggestions.find(
+            (entry) => entry.speakerId === speaker.id,
+          );
+          if (suggestion === undefined) {
+            throw new Error(`No Voice suggestion for Speaker: ${speaker.id}`);
+          }
+          await this.renameSpeaker(speaker, suggestion.suggestedName);
         },
         async undo(): Promise<boolean> {
           if (!handleIsCurrent() || lockedProjects.has(projectId)) {
