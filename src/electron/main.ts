@@ -84,23 +84,30 @@ ipcMain.handle(
     const current = requireDescriber();
     const picked = await dialog.showOpenDialog(requireWindow(), {
       title: "Import a Source",
-      properties: ["openFile"],
+      properties: ["openFile", "multiSelections"],
       filters: [{ name: "Source", extensions: SOURCE_EXTENSIONS }],
     });
-    const sourcePath = picked.filePaths[0];
-    if (picked.canceled || sourcePath === undefined) {
+    const sourcePaths = picked.filePaths;
+    if (picked.canceled || sourcePaths.length === 0) {
       return { library: current.library };
     }
     const target = requireWindow();
     const sendProgress = (): void => {
       target.webContents.send("describer:processing", current.processing);
+      target.webContents.send("describer:library", current.library);
     };
     const timer = setInterval(sendProgress, 100);
     sendProgress();
     try {
-      await current.importSource(sourcePath, language);
-    } catch {
-      // Cancel or failure leaves no Project; the Library is returned as-is.
+      await Promise.all(
+        sourcePaths.map(async (sourcePath) => {
+          try {
+            await current.importSource(sourcePath, language);
+          } catch {
+            // Cancel or failure leaves no Project; the Library is returned as-is.
+          }
+        }),
+      );
     } finally {
       clearInterval(timer);
       sendProgress();
@@ -129,6 +136,59 @@ ipcMain.handle("describer:locateSource", async () => {
   }
   await current.locateSource(opened.project.id, sourcePath);
   return { library: current.library, opened: openedSnapshot() };
+});
+
+ipcMain.handle("describer:getOpened", () => {
+  if (opened === undefined) {
+    return null;
+  }
+  return openedSnapshot();
+});
+
+ipcMain.handle("describer:reprocessProject", async () => {
+  const current = requireDescriber();
+  if (opened === undefined) {
+    throw new Error("No Project is open");
+  }
+  const confirmed = await dialog.showMessageBox(requireWindow(), {
+    type: "warning",
+    title: "Re-process Project",
+    message: "Replace this Transcript?",
+    detail:
+      "Edits and Speaker names from the old pass are gone. The Source is not changed. Duplicate the Project file first to keep the current Transcript.",
+    buttons: ["Cancel", "Re-process"],
+    defaultId: 0,
+    cancelId: 0,
+  });
+  if (confirmed.response !== 1) {
+    return {
+      library: current.library,
+      opened: openedSnapshot(),
+      reprocessed: false,
+    };
+  }
+  const projectId = opened.project.id;
+  const target = requireWindow();
+  const sendProgress = (): void => {
+    target.webContents.send("describer:processing", current.processing);
+    target.webContents.send("describer:library", current.library);
+  };
+  const timer = setInterval(sendProgress, 100);
+  sendProgress();
+  try {
+    await current.reprocessProject(projectId, true);
+  } catch {
+    // Failure leaves the Project; the Transcript stays until a later pass.
+  } finally {
+    opened = current.openProject(projectId);
+    clearInterval(timer);
+    sendProgress();
+  }
+  return {
+    library: current.library,
+    opened: openedSnapshot(),
+    reprocessed: true,
+  };
 });
 
 ipcMain.handle("describer:deleteProject", async () => {
@@ -167,6 +227,23 @@ ipcMain.handle("describer:exportProject", async () => {
     return { library: current.library };
   }
   await current.exportProject(opened.project.id, picked.filePath);
+  return { library: current.library };
+});
+
+ipcMain.handle("describer:exportMarkdown", async () => {
+  const current = requireDescriber();
+  if (opened === undefined) {
+    throw new Error("No Project is open");
+  }
+  const picked = await dialog.showSaveDialog(requireWindow(), {
+    title: "Export Markdown",
+    defaultPath: `${opened.project.title}.md`,
+    filters: [{ name: "Markdown", extensions: ["md"] }],
+  });
+  if (picked.canceled || picked.filePath === undefined) {
+    return { library: current.library };
+  }
+  await current.exportMarkdown(opened.project.id, picked.filePath);
   return { library: current.library };
 });
 

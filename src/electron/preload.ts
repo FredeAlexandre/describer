@@ -47,8 +47,24 @@ contextBridge.exposeInMainWorld("describer", {
       ipcRenderer.removeListener("describer:processing", handler);
     };
   },
+  onLibrary: (listener: (library: Library) => void): (() => void) => {
+    const handler = (_event: unknown, library: Library): void => {
+      listener(library);
+    };
+    ipcRenderer.on("describer:library", handler);
+    return () => {
+      ipcRenderer.removeListener("describer:library", handler);
+    };
+  },
   openProject: (projectId: string): Promise<OpenedView> =>
     ipcRenderer.invoke("describer:openProject", projectId),
+  getOpened: (): Promise<OpenedView | null> =>
+    ipcRenderer.invoke("describer:getOpened"),
+  reprocessProject: (): Promise<{
+    library: Library;
+    opened: OpenedView;
+    reprocessed: boolean;
+  }> => ipcRenderer.invoke("describer:reprocessProject"),
   play: (): Promise<boolean> => ipcRenderer.invoke("describer:play"),
   playSelection: (fromId: string, throughId: string): Promise<boolean> =>
     ipcRenderer.invoke("describer:playSelection", fromId, throughId),
@@ -100,6 +116,8 @@ contextBridge.exposeInMainWorld("describer", {
     ipcRenderer.invoke("describer:deleteProject"),
   exportProject: (): Promise<{ library: Library }> =>
     ipcRenderer.invoke("describer:exportProject"),
+  exportMarkdown: (): Promise<{ library: Library }> =>
+    ipcRenderer.invoke("describer:exportMarkdown"),
   exportSrt: (): Promise<{ library: Library }> =>
     ipcRenderer.invoke("describer:exportSrt"),
   exportVtt: (): Promise<{ library: Library }> =>

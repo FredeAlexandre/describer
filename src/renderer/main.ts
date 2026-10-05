@@ -75,7 +75,14 @@ declare global {
       onProcessing: (
         listener: (processing: ProcessingView | null) => void,
       ) => () => void;
+      onLibrary: (listener: (library: LibraryView) => void) => () => void;
       openProject: (projectId: string) => Promise<OpenedView>;
+      getOpened: () => Promise<OpenedView | null>;
+      reprocessProject: () => Promise<{
+        library: LibraryView;
+        opened: OpenedView;
+        reprocessed: boolean;
+      }>;
       play: () => Promise<boolean>;
       playSelection: (fromId: string, throughId: string) => Promise<boolean>;
       copyCitation: (
@@ -112,6 +119,7 @@ declare global {
       locateSource: () => Promise<{ library: LibraryView; opened: OpenedView }>;
       deleteProject: () => Promise<{ library: LibraryView; deleted: boolean }>;
       exportProject: () => Promise<{ library: LibraryView }>;
+      exportMarkdown: () => Promise<{ library: LibraryView }>;
       exportSrt: () => Promise<{ library: LibraryView }>;
       exportVtt: () => Promise<{ library: LibraryView }>;
       importProject: () => Promise<{ library: LibraryView }>;
@@ -189,6 +197,13 @@ async function locateSource(): Promise<void> {
   }
 }
 
+async function reprocessProject(): Promise<void> {
+  const result = await window.describer.reprocessProject();
+  library = result.library;
+  opened = result.opened;
+  render();
+}
+
 async function deleteProject(): Promise<void> {
   const result = await window.describer.deleteProject();
   library = result.library;
@@ -200,6 +215,11 @@ async function deleteProject(): Promise<void> {
 
 async function exportProject(): Promise<void> {
   const result = await window.describer.exportProject();
+  library = result.library;
+}
+
+async function exportMarkdown(): Promise<void> {
+  const result = await window.describer.exportMarkdown();
   library = result.library;
 }
 
@@ -623,7 +643,6 @@ function renderLibraryList(root: HTMLElement): void {
   const importButton = document.createElement("button");
   importButton.type = "button";
   importButton.textContent = "Import Source";
-  importButton.disabled = processing != null;
   importButton.addEventListener("click", () => {
     void importSource();
   });
@@ -782,6 +801,13 @@ function renderPlayer(root: HTMLElement): void {
     void exportProject();
   });
 
+  const exportMarkdownButton = document.createElement("button");
+  exportMarkdownButton.type = "button";
+  exportMarkdownButton.textContent = "Export Markdown";
+  exportMarkdownButton.addEventListener("click", () => {
+    void exportMarkdown();
+  });
+
   const exportSrtButton = document.createElement("button");
   exportSrtButton.type = "button";
   exportSrtButton.textContent = "Export SRT";
@@ -803,11 +829,21 @@ function renderPlayer(root: HTMLElement): void {
     void deleteProject();
   });
 
+  const reprocessButton = document.createElement("button");
+  reprocessButton.type = "button";
+  reprocessButton.textContent = "Re-process";
+  reprocessButton.disabled = !opened.transcript.editable;
+  reprocessButton.addEventListener("click", () => {
+    void reprocessProject();
+  });
+
   actions.append(
     locateButton,
     exportButton,
+    exportMarkdownButton,
     exportSrtButton,
     exportVttButton,
+    reprocessButton,
     deleteButton,
   );
   pane.append(actions);
@@ -1104,6 +1140,20 @@ library = started.library;
 importLanguage = library.lastUsedLanguage;
 window.describer.onProcessing((next) => {
   processing = next;
+  if (opened !== undefined) {
+    void window.describer.getOpened().then((snapshot) => {
+      if (snapshot !== null) {
+        opened = snapshot;
+      }
+      render();
+    });
+    return;
+  }
+  render();
+});
+window.describer.onLibrary((next) => {
+  library = next;
+  importLanguage = library.lastUsedLanguage;
   render();
 });
 render();

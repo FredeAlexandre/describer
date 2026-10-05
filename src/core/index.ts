@@ -114,9 +114,11 @@ export type Describer = {
   locateSource(projectId: string, sourcePath: string): Promise<Project>;
   deleteProject(projectId: string): Promise<void>;
   exportProject(projectId: string, destinationPath: string): Promise<void>;
+  exportMarkdown(projectId: string, destinationPath: string): Promise<void>;
   exportSrt(projectId: string, destinationPath: string): Promise<void>;
   exportVtt(projectId: string, destinationPath: string): Promise<void>;
   importProject(projectFilePath: string): Promise<Project>;
+  reprocessProject(projectId: string, confirmed: boolean): Promise<Project>;
   openProject(projectId: string): OpenedProject;
 };
 
@@ -186,6 +188,21 @@ type StoredTranscript = {
 };
 
 const EMPTY_TRANSCRIPT: StoredTranscript = { speakers: [], words: [] };
+
+function storedFromProcessed(processed: ProcessorResult): StoredTranscript {
+  utterancesFrom(processed.speakers, processed.words);
+  return {
+    speakers: processed.speakers.map((speaker) => ({ ...speaker })),
+    words: processed.words.map((word) => ({
+      id: word.id,
+      text: word.text,
+      start: word.start,
+      end: word.end,
+      speakerId: word.speakerId,
+      paragraphBreakBefore: word.paragraphBreakBefore === true,
+    })),
+  };
+}
 
 const VIDEO_EXTENSIONS = new Set([
   ".mp4",
@@ -284,6 +301,35 @@ function formatVtt(cues: readonly CaptionCue[]): string {
     )
     .join("\n");
   return `WEBVTT\n\n${body}`;
+}
+
+function formatMarkdownTime(seconds: number): string {
+  return formatCaptionTime(seconds, ".");
+}
+
+function formatMarkdown(
+  project: Project,
+  utterances: readonly Utterance[],
+): string {
+  const lines = [
+    `# ${project.title}`,
+    "",
+    `Recorded at: ${project.recordedAt.toISOString()}`,
+    `Language: ${project.language}`,
+  ];
+  for (const utterance of utterances) {
+    const first = utterance.words[0];
+    if (first === undefined) {
+      continue;
+    }
+    lines.push(
+      "",
+      `**${utterance.speaker.name}** (${formatMarkdownTime(first.start)})`,
+      "",
+      utterance.words.map((entry) => entry.text).join(" "),
+    );
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 function findPhraseStarts(words: readonly Word[], needle: string): Word[] {
@@ -605,13 +651,36 @@ export async function openDescriber(
   const processor = options.processor ?? onDeviceProcessor();
   let processing: Processing | null = null;
   let activeImport: AbortController | undefined;
+  const transcriptEpoch = new Map<string, number>();
+  const lockedProjects = new Set<string>();
+  const unpersistedProjects = new Set<string>();
+  let processQueue: Promise<void> = Promise.resolve();
+
+  function epochOf(projectId: string): number {
+    return transcriptEpoch.get(projectId) ?? 0;
+  }
+
+  function dropOpenedHandles(projectId: string): void {
+    transcriptEpoch.set(projectId, epochOf(projectId) + 1);
+  }
+
+  function enqueueProcess<T>(job: () => Promise<T>): Promise<T> {
+    const run = processQueue.then(job, job);
+    processQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
 
   async function persist(): Promise<void> {
     const stored: StoredLibrary = {
       lastUsedLanguage,
-      projects: projects.map((project) =>
-        toStoredProject(project, transcripts.get(project.id) ?? EMPTY_TRANSCRIPT),
-      ),
+      projects: projects
+        .filter((project) => !unpersistedProjects.has(project.id))
+        .map((project) =>
+          toStoredProject(project, transcripts.get(project.id) ?? EMPTY_TRANSCRIPT),
+        ),
     };
     await writeFile(libraryFile(libraryDir), `${JSON.stringify(stored, null, 2)}\n`);
   }
@@ -620,6 +689,42 @@ export async function openDescriber(
     return [...projects].sort(
       (left, right) => right.recordedAt.getTime() - left.recordedAt.getTime(),
     );
+  }
+
+  function dropImport(projectId: string): void {
+    const index = projects.findIndex((project) => project.id === projectId);
+    if (index >= 0) {
+      projects.splice(index, 1);
+    }
+    transcripts.delete(projectId);
+    lockedProjects.delete(projectId);
+    unpersistedProjects.delete(projectId);
+  }
+
+  async function runProcessor(
+    sourcePath: string,
+    language: Language,
+  ): Promise<ProcessorResult> {
+    const controller = new AbortController();
+    activeImport = controller;
+    processing = { progress: 0 };
+    try {
+      const processed = await processor.process(sourcePath, language, {
+        signal: controller.signal,
+        onProgress: (progress) => {
+          processing = { progress };
+        },
+      });
+      if (controller.signal.aborted) {
+        throw new Error("Processing cancelled");
+      }
+      return processed;
+    } finally {
+      processing = null;
+      if (activeImport === controller) {
+        activeImport = undefined;
+      }
+    }
   }
 
   return {
@@ -641,48 +746,31 @@ export async function openDescriber(
       language: Language = lastUsedLanguage,
     ): Promise<Project> {
       const sourceStat = await stat(sourcePath);
-      const controller = new AbortController();
-      activeImport = controller;
-      processing = { progress: 0 };
-      try {
-        const processed = await processor.process(sourcePath, language, {
-          signal: controller.signal,
-          onProgress: (progress) => {
-            processing = { progress };
-          },
-        });
-        if (controller.signal.aborted) {
-          throw new Error("Processing cancelled");
+      const project: Project = {
+        id: randomUUID(),
+        title: path.basename(sourcePath),
+        recordedAt: sourceStat.mtime,
+        language,
+        sourcePath,
+      };
+      projects.push(project);
+      transcripts.set(project.id, EMPTY_TRANSCRIPT);
+      lockedProjects.add(project.id);
+      unpersistedProjects.add(project.id);
+      return enqueueProcess(async () => {
+        try {
+          const processed = await runProcessor(sourcePath, language);
+          transcripts.set(project.id, storedFromProcessed(processed));
+          lockedProjects.delete(project.id);
+          unpersistedProjects.delete(project.id);
+          lastUsedLanguage = language;
+          await persist();
+          return project;
+        } catch (error) {
+          dropImport(project.id);
+          throw error;
         }
-        utterancesFrom(processed.speakers, processed.words);
-        const project: Project = {
-          id: randomUUID(),
-          title: path.basename(sourcePath),
-          recordedAt: sourceStat.mtime,
-          language,
-          sourcePath,
-        };
-        projects.push(project);
-        transcripts.set(project.id, {
-          speakers: processed.speakers.map((speaker) => ({ ...speaker })),
-          words: processed.words.map((word) => ({
-            id: word.id,
-            text: word.text,
-            start: word.start,
-            end: word.end,
-            speakerId: word.speakerId,
-            paragraphBreakBefore: word.paragraphBreakBefore === true,
-          })),
-        });
-        lastUsedLanguage = language;
-        await persist();
-        return project;
-      } finally {
-        processing = null;
-        if (activeImport === controller) {
-          activeImport = undefined;
-        }
-      }
+      });
     },
     async updateProject(
       projectId: string,
@@ -738,6 +826,8 @@ export async function openDescriber(
       }
       projects.splice(index, 1);
       transcripts.delete(projectId);
+      lockedProjects.delete(projectId);
+      unpersistedProjects.delete(projectId);
       await persist();
     },
     async exportProject(
@@ -758,6 +848,23 @@ export async function openDescriber(
           null,
           2,
         )}\n`,
+      );
+    },
+    async exportMarkdown(
+      projectId: string,
+      destinationPath: string,
+    ): Promise<void> {
+      const project = projects.find((entry) => entry.id === projectId);
+      if (project === undefined) {
+        throw new Error(`Project not found: ${projectId}`);
+      }
+      const stored = transcripts.get(project.id) ?? EMPTY_TRANSCRIPT;
+      await writeFile(
+        destinationPath,
+        formatMarkdown(
+          project,
+          utterancesFrom(stored.speakers, stored.words),
+        ),
       );
     },
     async exportSrt(
@@ -794,6 +901,40 @@ export async function openDescriber(
       await persist();
       return project;
     },
+    async reprocessProject(
+      projectId: string,
+      confirmed: boolean,
+    ): Promise<Project> {
+      const project = projects.find((entry) => entry.id === projectId);
+      if (project === undefined) {
+        throw new Error(`Project not found: ${projectId}`);
+      }
+      if (!confirmed) {
+        throw new Error("Re-process requires confirmation");
+      }
+      dropOpenedHandles(project.id);
+      lockedProjects.add(project.id);
+      return enqueueProcess(async () => {
+        const current = projects.find((entry) => entry.id === projectId);
+        if (current === undefined) {
+          lockedProjects.delete(projectId);
+          throw new Error(`Project not found: ${projectId}`);
+        }
+        try {
+          const processed = await runProcessor(
+            current.sourcePath,
+            current.language,
+          );
+          transcripts.set(current.id, storedFromProcessed(processed));
+          lockedProjects.delete(current.id);
+          await persist();
+          return current;
+        } catch (error) {
+          lockedProjects.delete(current.id);
+          throw error;
+        }
+      });
+    },
     searchLibrary(query: string): readonly SearchHit[] {
       const needle = query.trim().toLowerCase();
       if (needle.length === 0) {
@@ -825,6 +966,10 @@ export async function openDescriber(
       }
       const cursor = new PlaybackCursor(now);
       const sourcePresent = existsSync(project.sourcePath);
+      const handleEpoch = epochOf(projectId);
+      function handleIsCurrent(): boolean {
+        return epochOf(projectId) === handleEpoch;
+      }
       function storedTranscript(): StoredTranscript {
         return (
           transcripts.get(projectId) ?? {
@@ -836,6 +981,12 @@ export async function openDescriber(
       const undoStack: StoredTranscript[] = [];
       const redoStack: StoredTranscript[] = [];
       async function applyEdit(next: StoredTranscript): Promise<void> {
+        if (!handleIsCurrent()) {
+          throw new Error("OpenedProject handle is no longer current");
+        }
+        if (lockedProjects.has(projectId)) {
+          throw new Error("Transcript is not editable");
+        }
         undoStack.push(snapshotTranscript(storedTranscript()));
         redoStack.length = 0;
         transcripts.set(projectId, next);
@@ -866,7 +1017,7 @@ export async function openDescriber(
           const stored = storedTranscript();
           return {
             utterances: utterancesFrom(stored.speakers, stored.words),
-            editable: true,
+            editable: !lockedProjects.has(projectId),
             speakers: stored.speakers,
           };
         },
@@ -1076,6 +1227,9 @@ export async function openDescriber(
           });
         },
         async undo(): Promise<boolean> {
+          if (!handleIsCurrent() || lockedProjects.has(projectId)) {
+            return false;
+          }
           const previous = undoStack.pop();
           if (previous === undefined) {
             return false;
@@ -1086,6 +1240,9 @@ export async function openDescriber(
           return true;
         },
         async redo(): Promise<boolean> {
+          if (!handleIsCurrent() || lockedProjects.has(projectId)) {
+            return false;
+          }
           const next = redoStack.pop();
           if (next === undefined) {
             return false;
