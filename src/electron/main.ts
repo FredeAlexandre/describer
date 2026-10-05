@@ -247,6 +247,23 @@ ipcMain.handle("describer:exportMarkdown", async () => {
   return { library: current.library };
 });
 
+ipcMain.handle("describer:exportPdf", async () => {
+  const current = requireDescriber();
+  if (opened === undefined) {
+    throw new Error("No Project is open");
+  }
+  const picked = await dialog.showSaveDialog(requireWindow(), {
+    title: "Export PDF",
+    defaultPath: `${opened.project.title}.pdf`,
+    filters: [{ name: "PDF", extensions: ["pdf"] }],
+  });
+  if (picked.canceled || picked.filePath === undefined) {
+    return { library: current.library };
+  }
+  await current.exportPdf(opened.project.id, picked.filePath);
+  return { library: current.library };
+});
+
 ipcMain.handle("describer:exportSrt", async () => {
   const current = requireDescriber();
   if (opened === undefined) {
