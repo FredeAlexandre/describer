@@ -335,13 +335,7 @@ function requireOpened(): OpenedProject {
 }
 
 function wordById(openedProject: OpenedProject, wordId: string): Word {
-  for (const utterance of openedProject.transcript.utterances) {
-    const word = utterance.words.find((entry) => entry.id === wordId);
-    if (word !== undefined) {
-      return word;
-    }
-  }
-  throw new Error(`Word not found: ${wordId}`);
+  return openedProject.wordById(wordId);
 }
 
 function speakerById(openedProject: OpenedProject, speakerId: string): Speaker {
@@ -506,7 +500,6 @@ ipcMain.handle(
     patch: {
       readonly title?: string;
       readonly recordedAt?: string;
-      readonly language?: Language;
     },
   ) => {
     const current = requireDescriber();
@@ -514,7 +507,6 @@ ipcMain.handle(
       title: patch.title,
       recordedAt:
         patch.recordedAt === undefined ? undefined : new Date(patch.recordedAt),
-      language: patch.language,
     });
     return { project, library: current.library };
   },

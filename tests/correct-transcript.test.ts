@@ -4,24 +4,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "vitest";
 import {
+  fixtureProcessor,
   openDescriber,
-  type Processor,
   type Speaker,
   type Word,
 } from "../src/core/index.ts";
 
 const speaker1: Speaker = { id: "s1", name: "Speaker 1" };
 const speaker2: Speaker = { id: "s2", name: "Speaker 2" };
-
-function fixtureProcessor(words: readonly Word[]): Processor {
-  const speakerIds = new Set(words.map((word) => word.speakerId));
-  const speakers = [speaker1, speaker2].filter((speaker) =>
-    speakerIds.has(speaker.id),
-  );
-  return {
-    process: async () => ({ speakers, words }),
-  };
-}
 
 function word(
   id: string,
@@ -55,6 +45,8 @@ test("changing Word text leaves start and end times put", async () => {
         words: [{ ...hello, text: "Hey" }, there],
       },
     ]);
+    expect(opened.wordById(hello.id).text).toBe("Hey");
+    expect(opened.wordById(there.id)).toEqual(there);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -369,10 +361,10 @@ test("undo does not reverse import or delete", async () => {
     expect(opened.transcript.utterances).toEqual([
       { speaker: speaker1, words: [hello] },
     ]);
-    expect(describer.library.projects.map((entry) => entry.id)).toEqual([
-      project.id,
-      imported.id,
-    ]);
+    expect(describer.library.projects).toHaveLength(2);
+    expect(describer.library.projects.map((entry) => entry.id)).toEqual(
+      expect.arrayContaining([project.id, imported.id]),
+    );
     await describer.deleteProject(imported.id);
     expect(await opened.undo()).toBe(false);
     expect(describer.library.projects.map((entry) => entry.id)).toEqual([

@@ -108,7 +108,6 @@ contextBridge.exposeInMainWorld("describer", {
     patch: {
       readonly title?: string;
       readonly recordedAt?: string;
-      readonly language?: Language;
     },
   ): Promise<{ project: Project; library: Library }> =>
     ipcRenderer.invoke("describer:updateProject", projectId, patch),

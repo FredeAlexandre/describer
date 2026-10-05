@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "vitest";
 import {
+  fixtureProcessor,
   openDescriber,
   type Processor,
   type ProcessorResult,
@@ -12,16 +13,6 @@ import {
 
 const speaker1: Speaker = { id: "s1", name: "Speaker 1" };
 const speaker2: Speaker = { id: "s2", name: "Speaker 2" };
-
-function fixtureProcessor(words: readonly Word[]): Processor {
-  const speakerIds = new Set(words.map((word) => word.speakerId));
-  const speakers = [speaker1, speaker2].filter((speaker) =>
-    speakerIds.has(speaker.id),
-  );
-  return {
-    process: async () => ({ speakers, words }),
-  };
-}
 
 function word(
   id: string,
@@ -126,7 +117,7 @@ test("a user paragraph break starts a new Utterance", async () => {
   }
 });
 
-test("clicking or selecting Transcript text seeks to the first Word in that range", async () => {
+test("clicking or selecting Transcript text seeks to the first Word in that Selection", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "describer-transcript-"));
   const libraryDir = path.join(root, "library");
   const sourcePath = path.join(root, "standup.mp4");

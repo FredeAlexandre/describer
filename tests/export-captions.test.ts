@@ -54,7 +54,7 @@ test("Export SRT writes Words as caption text without Speaker names", async () =
   }
 });
 
-test("Export SRT wraps a 40-second Utterance by duration instead of dumping it as one cue", async () => {
+test("Export SRT wraps a 40-second Utterance by duration instead of dumping it as one caption", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "describer-captions-"));
   const libraryDir = path.join(root, "library");
   const sourcePath = path.join(root, "standup.mp4");
