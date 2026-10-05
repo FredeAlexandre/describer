@@ -49,6 +49,7 @@ type UtteranceView = {
 type TranscriptView = {
   readonly utterances: readonly UtteranceView[];
   readonly editable: boolean;
+  readonly speakers: readonly SpeakerView[];
 };
 
 type OpenedView = {
@@ -86,6 +87,12 @@ declare global {
         placement: WordPlacement,
       ) => Promise<OpenedView & { inserted: WordView }>;
       insertParagraphBreak: (wordId: string) => Promise<OpenedView>;
+      renameSpeaker: (speakerId: string, name: string) => Promise<OpenedView>;
+      mergeSpeakers: (fromId: string, intoId: string) => Promise<OpenedView>;
+      reassignWords: (
+        wordIds: readonly string[],
+        speaker: SpeakerView,
+      ) => Promise<OpenedView>;
       undo: () => Promise<OpenedView>;
       redo: () => Promise<OpenedView>;
       updateProject: (
@@ -117,6 +124,9 @@ let processing: ProcessingView | null = null;
 let libraryQuery = "";
 let libraryHits: readonly SearchHitView[] = [];
 let transcriptQuery = "";
+let selectedWordIds: string[] = [];
+
+const NEW_SPEAKER = "__new__";
 
 function recordedAtDate(value: Date | string): Date {
   return value instanceof Date ? value : new Date(value);
@@ -262,6 +272,11 @@ function allWords(transcript: TranscriptView): WordView[] {
   return transcript.utterances.flatMap((utterance) => [...utterance.words]);
 }
 
+function selectedWords(transcript: TranscriptView): WordView[] {
+  const ids = new Set(selectedWordIds);
+  return allWords(transcript).filter((word) => ids.has(word.id));
+}
+
 function nextWordId(
   transcript: TranscriptView,
   wordId: string,
@@ -314,13 +329,46 @@ async function flushWord(wordId: string, raw: string): Promise<boolean> {
 
 async function flushActiveWord(): Promise<void> {
   const active = document.activeElement;
-  if (
-    !(active instanceof HTMLElement) ||
-    active.dataset.wordId === undefined
-  ) {
+  if (!(active instanceof HTMLElement)) {
     return;
   }
-  await flushWord(active.dataset.wordId, active.textContent ?? "");
+  if (active.dataset.wordId !== undefined) {
+    await flushWord(active.dataset.wordId, active.textContent ?? "");
+    return;
+  }
+  if (active.dataset.speakerId !== undefined) {
+    await renameIfChanged(active.dataset.speakerId, active.textContent ?? "");
+  }
+}
+
+async function renameIfChanged(
+  speakerId: string,
+  name: string,
+): Promise<boolean> {
+  if (opened === undefined) {
+    return false;
+  }
+  const trimmed = name.trim();
+  const speaker = opened.transcript.speakers.find(
+    (entry) => entry.id === speakerId,
+  );
+  if (speaker === undefined || trimmed.length === 0 || speaker.name === trimmed) {
+    return false;
+  }
+  opened = await window.describer.renameSpeaker(speakerId, trimmed);
+  return true;
+}
+
+async function commitSpeakerName(
+  speakerId: string,
+  name: string,
+): Promise<void> {
+  if (rendering) {
+    return;
+  }
+  if (await renameIfChanged(speakerId, name)) {
+    render();
+  }
 }
 
 async function undoTranscript(): Promise<void> {
@@ -361,6 +409,47 @@ async function breakParagraph(wordId: string, raw: string): Promise<void> {
       opened = await window.describer.insertParagraphBreak(nextId);
     }
   }
+  render();
+}
+
+async function mergeInto(fromId: string, intoId: string): Promise<void> {
+  if (opened === undefined || fromId === intoId) {
+    return;
+  }
+  opened = await window.describer.mergeSpeakers(fromId, intoId);
+  render();
+}
+
+async function reassignSelection(speakerId: string): Promise<void> {
+  if (opened === undefined) {
+    return;
+  }
+  const words = selectedWords(opened.transcript);
+  if (words.length === 0) {
+    return;
+  }
+  let speaker: SpeakerView | undefined;
+  if (speakerId === NEW_SPEAKER) {
+    const typed = window.prompt("Speaker name");
+    if (typed === null) {
+      return;
+    }
+    const name = typed.trim();
+    if (name.length === 0) {
+      return;
+    }
+    speaker = { id: crypto.randomUUID(), name };
+  } else {
+    speaker = opened.transcript.speakers.find((entry) => entry.id === speakerId);
+  }
+  if (speaker === undefined) {
+    return;
+  }
+  opened = await window.describer.reassignWords(
+    words.map((word) => word.id),
+    speaker,
+  );
+  selectedWordIds = [];
   render();
 }
 
@@ -726,6 +815,33 @@ function renderTranscript(root: HTMLElement): void {
   });
   pane.append(find);
 
+  if (opened.transcript.editable) {
+    const reassign = document.createElement("select");
+    reassign.setAttribute("aria-label", "Reassign selected Words");
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Reassign selection to…";
+    reassign.append(placeholder);
+    for (const speaker of opened.transcript.speakers) {
+      const option = document.createElement("option");
+      option.value = speaker.id;
+      option.textContent = speaker.name;
+      reassign.append(option);
+    }
+    const create = document.createElement("option");
+    create.value = NEW_SPEAKER;
+    create.textContent = "New Speaker…";
+    reassign.append(create);
+    reassign.addEventListener("change", () => {
+      const speakerId = reassign.value;
+      reassign.value = "";
+      if (speakerId.length > 0) {
+        void reassignSelection(speakerId);
+      }
+    });
+    pane.append(reassign);
+  }
+
   if (opened.transcript.utterances.length === 0) {
     const empty = document.createElement("p");
     empty.className = "empty";
@@ -738,9 +854,54 @@ function renderTranscript(root: HTMLElement): void {
   for (const utterance of opened.transcript.utterances) {
     const block = document.createElement("article");
     block.className = "utterance";
-    const speaker = document.createElement("p");
+    const heading = document.createElement("div");
+    heading.className = "speaker-row";
+    const speaker = document.createElement("span");
     speaker.className = "speaker";
+    speaker.dataset.speakerId = utterance.speaker.id;
     speaker.textContent = utterance.speaker.name;
+    if (opened.transcript.editable) {
+      speaker.contentEditable = "true";
+      speaker.spellcheck = false;
+      speaker.addEventListener("blur", () => {
+        void commitSpeakerName(
+          utterance.speaker.id,
+          speaker.textContent ?? "",
+        );
+      });
+    }
+    heading.append(speaker);
+    if (
+      opened.transcript.editable &&
+      opened.transcript.speakers.length > 1
+    ) {
+      const merge = document.createElement("select");
+      merge.setAttribute(
+        "aria-label",
+        `Merge ${utterance.speaker.name} into`,
+      );
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "Merge into…";
+      merge.append(placeholder);
+      for (const other of opened.transcript.speakers) {
+        if (other.id === utterance.speaker.id) {
+          continue;
+        }
+        const option = document.createElement("option");
+        option.value = other.id;
+        option.textContent = other.name;
+        merge.append(option);
+      }
+      merge.addEventListener("change", () => {
+        const intoId = merge.value;
+        merge.value = "";
+        if (intoId.length > 0) {
+          void mergeInto(utterance.speaker.id, intoId);
+        }
+      });
+      heading.append(merge);
+    }
     const text = document.createElement("p");
     text.className = "utterance-text";
     for (const [index, word] of utterance.words.entries()) {
@@ -766,25 +927,31 @@ function renderTranscript(root: HTMLElement): void {
       }
       text.append(token);
     }
-    block.append(speaker, text);
+    block.append(heading, text);
     pane.append(block);
   }
 
   pane.addEventListener("mouseup", (event) => {
     const selection = window.getSelection();
     if (selection !== null && !selection.isCollapsed) {
+      selectedWordIds = [];
       for (const element of pane.querySelectorAll(".word")) {
         if (selection.containsNode(element, true)) {
           const wordId = element.getAttribute("data-word-id");
           if (wordId !== null) {
-            void seekToWord(wordId);
+            selectedWordIds.push(wordId);
           }
-          return;
         }
       }
+      const first = selectedWordIds[0];
+      if (first !== undefined) {
+        void seekToWord(first);
+      }
+      return;
     }
     const target = event.target;
     if (target instanceof HTMLElement && target.dataset.wordId !== undefined) {
+      selectedWordIds = [target.dataset.wordId];
       void seekToWord(target.dataset.wordId);
     }
   });
