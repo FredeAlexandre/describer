@@ -118,6 +118,12 @@ audio {
   gap: 0.25rem;
 }
 
+.speaker-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
 .speaker {
   margin: 0;
   color: #bbb;
@@ -138,7 +144,12 @@ audio {
   outline: none;
 }
 
-.word[contenteditable="true"]:focus {
+.speaker[contenteditable="true"] {
+  outline: none;
+}
+
+.word[contenteditable="true"]:focus,
+.speaker[contenteditable="true"]:focus {
   background: #2a2a2a;
   box-shadow: 0 0 0 1px #666;
   border-radius: 0.15rem;

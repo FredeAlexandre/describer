@@ -8,6 +8,7 @@ import {
   type Language,
   type OpenedProject,
   type PlaybackRate,
+  type Speaker,
   type Word,
   type WordPlacement,
 } from "../core/index.js";
@@ -249,6 +250,16 @@ function wordById(openedProject: OpenedProject, wordId: string): Word {
   throw new Error(`Word not found: ${wordId}`);
 }
 
+function speakerById(openedProject: OpenedProject, speakerId: string): Speaker {
+  const speaker = openedProject.transcript.speakers.find(
+    (entry) => entry.id === speakerId,
+  );
+  if (speaker === undefined) {
+    throw new Error(`Speaker not found: ${speakerId}`);
+  }
+  return speaker;
+}
+
 ipcMain.handle("describer:openProject", (_event, projectId: string) => {
   opened = requireDescriber().openProject(projectId);
   return openedSnapshot();
@@ -313,6 +324,39 @@ ipcMain.handle(
   async (_event, wordId: string) => {
     const current = requireOpened();
     await current.insertParagraphBreak(wordById(current, wordId));
+    return openedSnapshot();
+  },
+);
+
+ipcMain.handle(
+  "describer:renameSpeaker",
+  async (_event, speakerId: string, name: string) => {
+    const current = requireOpened();
+    await current.renameSpeaker(speakerById(current, speakerId), name);
+    return openedSnapshot();
+  },
+);
+
+ipcMain.handle(
+  "describer:mergeSpeakers",
+  async (_event, fromId: string, intoId: string) => {
+    const current = requireOpened();
+    await current.mergeSpeakers(
+      speakerById(current, fromId),
+      speakerById(current, intoId),
+    );
+    return openedSnapshot();
+  },
+);
+
+ipcMain.handle(
+  "describer:reassignWords",
+  async (_event, wordIds: readonly string[], speaker: Speaker) => {
+    const current = requireOpened();
+    await current.reassignWords(
+      wordIds.map((wordId) => wordById(current, wordId)),
+      speaker,
+    );
     return openedSnapshot();
   },
 );

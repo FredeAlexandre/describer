@@ -51,6 +51,7 @@ export type Utterance = {
 export type Transcript = {
   readonly utterances: readonly Utterance[];
   readonly editable: boolean;
+  readonly speakers: readonly Speaker[];
 };
 
 export type Processing = {
@@ -77,6 +78,9 @@ export type OpenedProject = {
     placement: WordPlacement,
   ): Promise<Word>;
   insertParagraphBreak(word: Word): Promise<void>;
+  renameSpeaker(speaker: Speaker, name: string): Promise<void>;
+  mergeSpeakers(from: Speaker, into: Speaker): Promise<void>;
+  reassignWords(words: readonly Word[], speaker: Speaker): Promise<void>;
   undo(): Promise<boolean>;
   redo(): Promise<boolean>;
 };
@@ -127,19 +131,23 @@ export type Processor = {
   ): Promise<ProcessorResult>;
 };
 
-export function fixtureProcessor(words: readonly Word[] = []): Processor {
-  const speakerIds = [...new Set(words.map((word) => word.speakerId))];
-  const speakers: Speaker[] = speakerIds.map((id) => ({
-    id,
-    name: id === "s1" ? "Speaker 1" : id,
-  }));
+export function fixtureProcessor(
+  words: readonly Word[] = [],
+  speakers?: readonly Speaker[],
+): Processor {
+  const resolvedSpeakers =
+    speakers ??
+    [...new Set(words.map((word) => word.speakerId))].map((id) => ({
+      id,
+      name: id === "s1" ? "Speaker 1" : id,
+    }));
   return {
     async process(_sourcePath, _language, controls) {
       if (controls?.signal.aborted === true) {
         throw new Error("Processing cancelled");
       }
       controls?.onProgress(1);
-      return { speakers, words };
+      return { speakers: resolvedSpeakers, words };
     },
   };
 }
@@ -572,7 +580,7 @@ export async function openDescriber(
         };
         projects.push(project);
         transcripts.set(project.id, {
-          speakers: processed.speakers,
+          speakers: processed.speakers.map((speaker) => ({ ...speaker })),
           words: processed.words.map((word) => ({
             id: word.id,
             text: word.text,
@@ -775,6 +783,7 @@ export async function openDescriber(
           return {
             utterances: utterancesFrom(stored.speakers, stored.words),
             editable: true,
+            speakers: stored.speakers,
           };
         },
         get currentWord(): Word | undefined {
@@ -880,6 +889,79 @@ export async function openDescriber(
               wordIndex === index
                 ? { ...entry, paragraphBreakBefore: true }
                 : entry,
+            ),
+          });
+        },
+        async renameSpeaker(speaker: Speaker, name: string): Promise<void> {
+          const stored = storedTranscript();
+          const index = stored.speakers.findIndex(
+            (entry) => entry.id === speaker.id,
+          );
+          if (index < 0) {
+            throw new Error(`Speaker not found: ${speaker.id}`);
+          }
+          const current = stored.speakers[index];
+          if (current !== undefined && current.name === name) {
+            return;
+          }
+          await applyEdit({
+            speakers: stored.speakers.map((entry, speakerIndex) =>
+              speakerIndex === index ? { ...entry, name } : entry,
+            ),
+            words: stored.words,
+          });
+        },
+        async mergeSpeakers(from: Speaker, into: Speaker): Promise<void> {
+          const stored = storedTranscript();
+          if (from.id === into.id) {
+            return;
+          }
+          if (!stored.speakers.some((entry) => entry.id === from.id)) {
+            throw new Error(`Speaker not found: ${from.id}`);
+          }
+          if (!stored.speakers.some((entry) => entry.id === into.id)) {
+            throw new Error(`Speaker not found: ${into.id}`);
+          }
+          await applyEdit({
+            speakers: stored.speakers.filter((entry) => entry.id !== from.id),
+            words: stored.words.map((entry) =>
+              entry.speakerId === from.id
+                ? { ...entry, speakerId: into.id }
+                : entry,
+            ),
+          });
+        },
+        async reassignWords(
+          words: readonly Word[],
+          speaker: Speaker,
+        ): Promise<void> {
+          if (words.length === 0) {
+            return;
+          }
+          const stored = storedTranscript();
+          const ids = new Set(words.map((word) => word.id));
+          for (const word of words) {
+            if (!stored.words.some((entry) => entry.id === word.id)) {
+              throw new Error(`Word not found: ${word.id}`);
+            }
+          }
+          const speakerKnown = stored.speakers.some(
+            (entry) => entry.id === speaker.id,
+          );
+          const already =
+            speakerKnown &&
+            stored.words.every(
+              (entry) => !ids.has(entry.id) || entry.speakerId === speaker.id,
+            );
+          if (already) {
+            return;
+          }
+          await applyEdit({
+            speakers: speakerKnown
+              ? stored.speakers
+              : [...stored.speakers, { id: speaker.id, name: speaker.name }],
+            words: stored.words.map((entry) =>
+              ids.has(entry.id) ? { ...entry, speakerId: speaker.id } : entry,
             ),
           });
         },

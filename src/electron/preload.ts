@@ -6,6 +6,7 @@ import type {
   PlaybackRate,
   Processing,
   Project,
+  Speaker,
   Transcript,
   Word,
   WordPlacement,
@@ -64,6 +65,15 @@ contextBridge.exposeInMainWorld("describer", {
     ipcRenderer.invoke("describer:insertWord", neighborId, text, placement),
   insertParagraphBreak: (wordId: string): Promise<OpenedView> =>
     ipcRenderer.invoke("describer:insertParagraphBreak", wordId),
+  renameSpeaker: (speakerId: string, name: string): Promise<OpenedView> =>
+    ipcRenderer.invoke("describer:renameSpeaker", speakerId, name),
+  mergeSpeakers: (fromId: string, intoId: string): Promise<OpenedView> =>
+    ipcRenderer.invoke("describer:mergeSpeakers", fromId, intoId),
+  reassignWords: (
+    wordIds: readonly string[],
+    speaker: Speaker,
+  ): Promise<OpenedView> =>
+    ipcRenderer.invoke("describer:reassignWords", wordIds, speaker),
   undo: (): Promise<OpenedView> => ipcRenderer.invoke("describer:undo"),
   redo: (): Promise<OpenedView> => ipcRenderer.invoke("describer:redo"),
   updateProject: (
