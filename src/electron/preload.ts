@@ -1,6 +1,36 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { Describer } from "../core/index.js";
+import type {
+  Language,
+  Library,
+  Playback,
+  PlaybackRate,
+  Project,
+} from "../core/index.js";
+
+export type OpenedView = {
+  readonly project: Project;
+  readonly hasPicture: boolean;
+  readonly playback: Playback;
+  readonly sourceUrl: string | null;
+};
 
 contextBridge.exposeInMainWorld("describer", {
-  open: (): Promise<Describer> => ipcRenderer.invoke("describer:open"),
+  open: (): Promise<{ library: Library }> =>
+    ipcRenderer.invoke("describer:open"),
+  importSource: (language: Language): Promise<{ library: Library }> =>
+    ipcRenderer.invoke("describer:importSource", language),
+  openProject: (projectId: string): Promise<OpenedView> =>
+    ipcRenderer.invoke("describer:openProject", projectId),
+  play: (): Promise<boolean> => ipcRenderer.invoke("describer:play"),
+  setRate: (rate: PlaybackRate): Promise<Playback> =>
+    ipcRenderer.invoke("describer:setRate", rate),
+  updateProject: (
+    projectId: string,
+    patch: {
+      readonly title?: string;
+      readonly recordedAt?: string;
+      readonly language?: Language;
+    },
+  ): Promise<{ project: Project; library: Library }> =>
+    ipcRenderer.invoke("describer:updateProject", projectId, patch),
 });
