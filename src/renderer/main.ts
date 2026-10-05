@@ -77,6 +77,12 @@ declare global {
       ) => () => void;
       openProject: (projectId: string) => Promise<OpenedView>;
       play: () => Promise<boolean>;
+      playSelection: (fromId: string, throughId: string) => Promise<boolean>;
+      copyCitation: (
+        fromId: string,
+        throughId: string,
+        asMarkdown: boolean,
+      ) => Promise<{ readonly plainText: string; readonly markdown: string }>;
       setRate: (rate: PlaybackRate) => Promise<PlaybackView>;
       seekToWord: (wordId: string) => Promise<OpenedView>;
       changeWordText: (wordId: string, text: string) => Promise<OpenedView>;
@@ -125,6 +131,8 @@ let libraryQuery = "";
 let libraryHits: readonly SearchHitView[] = [];
 let transcriptQuery = "";
 let selectedWordIds: string[] = [];
+let selectionStopAt: number | undefined;
+let applyingSelectionSeek = false;
 
 const NEW_SPEAKER = "__new__";
 
@@ -214,7 +222,19 @@ async function openProject(projectId: string): Promise<void> {
     void media.play();
     highlightCurrentWord(media.currentTime);
     media.addEventListener("timeupdate", () => {
+      if (
+        selectionStopAt !== undefined &&
+        media.currentTime >= selectionStopAt
+      ) {
+        media.pause();
+        selectionStopAt = undefined;
+      }
       highlightCurrentWord(media.currentTime);
+    });
+    media.addEventListener("seeking", () => {
+      if (!applyingSelectionSeek) {
+        selectionStopAt = undefined;
+      }
     });
   }
 }
@@ -259,6 +279,7 @@ async function seekToWord(wordId: string): Promise<void> {
   if (opened === undefined) {
     return;
   }
+  selectionStopAt = undefined;
   opened = await window.describer.seekToWord(wordId);
   const word = wordById(opened.transcript, wordId);
   const media = mediaElement();
@@ -275,6 +296,54 @@ function allWords(transcript: TranscriptView): WordView[] {
 function selectedWords(transcript: TranscriptView): WordView[] {
   const ids = new Set(selectedWordIds);
   return allWords(transcript).filter((word) => ids.has(word.id));
+}
+
+function selectionEnds(
+  transcript: TranscriptView,
+): { from: WordView; through: WordView } | undefined {
+  const words = selectedWords(transcript);
+  const from = words[0];
+  const through = words[words.length - 1];
+  if (from === undefined || through === undefined) {
+    return undefined;
+  }
+  return { from, through };
+}
+
+async function playSelection(): Promise<void> {
+  if (opened === undefined) {
+    return;
+  }
+  const ends = selectionEnds(opened.transcript);
+  if (ends === undefined) {
+    return;
+  }
+  const played = await window.describer.playSelection(
+    ends.from.id,
+    ends.through.id,
+  );
+  if (!played) {
+    return;
+  }
+  selectionStopAt = ends.through.end;
+  const media = mediaElement();
+  if (media !== null) {
+    applyingSelectionSeek = true;
+    media.currentTime = ends.from.start;
+    applyingSelectionSeek = false;
+    void media.play();
+  }
+}
+
+async function copyCitation(asMarkdown: boolean): Promise<void> {
+  if (opened === undefined) {
+    return;
+  }
+  const ends = selectionEnds(opened.transcript);
+  if (ends === undefined) {
+    return;
+  }
+  await window.describer.copyCitation(ends.from.id, ends.through.id, asMarkdown);
 }
 
 function nextWordId(
@@ -840,6 +909,33 @@ function renderTranscript(root: HTMLElement): void {
       }
     });
     pane.append(reassign);
+
+    const selectionActions = document.createElement("div");
+    selectionActions.className = "import";
+    const playSelectionButton = document.createElement("button");
+    playSelectionButton.type = "button";
+    playSelectionButton.textContent = "Play Selection";
+    playSelectionButton.addEventListener("click", () => {
+      void playSelection();
+    });
+    const copyCitationButton = document.createElement("button");
+    copyCitationButton.type = "button";
+    copyCitationButton.textContent = "Copy Citation";
+    copyCitationButton.addEventListener("click", () => {
+      void copyCitation(false);
+    });
+    const copyMarkdownButton = document.createElement("button");
+    copyMarkdownButton.type = "button";
+    copyMarkdownButton.textContent = "Copy Citation as Markdown";
+    copyMarkdownButton.addEventListener("click", () => {
+      void copyCitation(true);
+    });
+    selectionActions.append(
+      playSelectionButton,
+      copyCitationButton,
+      copyMarkdownButton,
+    );
+    pane.append(selectionActions);
   }
 
   if (opened.transcript.utterances.length === 0) {

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain } from "electron";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -271,6 +271,30 @@ ipcMain.handle("describer:play", () => {
   }
   return opened.play();
 });
+
+ipcMain.handle(
+  "describer:playSelection",
+  (_event, fromId: string, throughId: string) => {
+    const current = requireOpened();
+    return current.playSelection(
+      wordById(current, fromId),
+      wordById(current, throughId),
+    );
+  },
+);
+
+ipcMain.handle(
+  "describer:copyCitation",
+  (_event, fromId: string, throughId: string, asMarkdown: boolean) => {
+    const current = requireOpened();
+    const citation = current.citation(
+      wordById(current, fromId),
+      wordById(current, throughId),
+    );
+    clipboard.writeText(asMarkdown ? citation.markdown : citation.plainText);
+    return citation;
+  },
+);
 
 ipcMain.handle("describer:setRate", (_event, rate: PlaybackRate) => {
   if (opened === undefined) {
