@@ -121,10 +121,6 @@ test("title, recorded-at, and language edits persist without an explicit Save", 
         recordedAt,
         language: "French",
         sourcePath,
-        transcript: {
-          language: "English",
-          words: [],
-        },
       },
     ]);
   } finally {

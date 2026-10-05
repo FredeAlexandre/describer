@@ -5,9 +5,17 @@ import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "vitest";
-import { openDescriber, fixtureProcessor, type Processor, type Word } from "../src/core/index.ts";
+import {
+  fixtureProcessor,
+  openDescriber,
+  type Processor,
+  type ProcessorResult,
+  type Word,
+} from "../src/core/index.ts";
 
 const execFileAsync = promisify(execFile);
+
+const speaker1 = { id: "s1", name: "Speaker 1" };
 
 async function withSource(
   run: (paths: { libraryDir: string; sourcePath: string }) => Promise<void>,
@@ -23,42 +31,53 @@ async function withSource(
   }
 }
 
+function timed(
+  id: string,
+  text: string,
+  start: number,
+  end: number,
+): Word {
+  return { id, text, start, end, speakerId: "s1", paragraphBreakBefore: false };
+}
+
+function wordsOf(describer: Awaited<ReturnType<typeof openDescriber>>, projectId: string): Word[] {
+  return describer
+    .openProject(projectId)
+    .transcript.utterances.flatMap((utterance) => [...utterance.words]);
+}
+
 test("processing a Source produces timed Words in the Transcript", async () => {
   await withSource(async ({ libraryDir, sourcePath }) => {
-    const words: Word[] = [
-      { text: "hello", start: 0, end: 0.4 },
-      { text: "world", start: 0.4, end: 0.9 },
+    const words = [
+      timed("w1", "hello", 0, 0.4),
+      timed("w2", "world", 0.4, 0.9),
     ];
     const describer = await openDescriber({
       libraryDir,
       processor: fixtureProcessor(words),
     });
     const project = await describer.importSource(sourcePath, "English");
-    expect(project.transcript.words).toEqual(words);
-    expect(describer.library.projects[0]?.transcript.words).toEqual(words);
+    expect(wordsOf(describer, project.id)).toEqual(words);
   });
 });
 
 test("Words use the language chosen at import", async () => {
   await withSource(async ({ libraryDir, sourcePath }) => {
     const processor: Processor = {
-      async process({ language, onProgress }) {
-        onProgress(1);
-        return {
-          language,
-          words:
-            language === "French"
-              ? [{ text: "bonjour", start: 0, end: 0.5 }]
-              : [{ text: "hello", start: 0, end: 0.5 }],
-        };
+      async process(_sourcePath, language, controls) {
+        controls?.onProgress(1);
+        const words =
+          language === "French"
+            ? [timed("w1", "bonjour", 0, 0.5)]
+            : [timed("w1", "hello", 0, 0.5)];
+        return { speakers: [speaker1], words };
       },
     };
     const describer = await openDescriber({ libraryDir, processor });
     const project = await describer.importSource(sourcePath, "French");
     expect(project.language).toBe("French");
-    expect(project.transcript.language).toBe("French");
-    expect(project.transcript.words).toEqual([
-      { text: "bonjour", start: 0, end: 0.5 },
+    expect(wordsOf(describer, project.id)).toEqual([
+      timed("w1", "bonjour", 0, 0.5),
     ]);
   });
 });
@@ -66,13 +85,13 @@ test("Words use the language chosen at import", async () => {
 test("progress is visible while processing runs", async () => {
   await withSource(async ({ libraryDir, sourcePath }) => {
     let reportProgress: ((progress: number) => void) | undefined;
-    let finish: ((transcript: { language: "English"; words: Word[] }) => void) | undefined;
+    let finish: ((result: ProcessorResult) => void) | undefined;
     const processor: Processor = {
-      process({ language, onProgress }) {
-        reportProgress = onProgress;
+      process(_sourcePath, _language, controls) {
+        reportProgress = controls?.onProgress;
         return new Promise((resolve) => {
           finish = resolve;
-        }).then(() => ({ language, words: [] }));
+        });
       },
     };
     const describer = await openDescriber({ libraryDir, processor });
@@ -81,9 +100,9 @@ test("progress is visible while processing runs", async () => {
     reportProgress?.(0.4);
     expect(describer.processing).toEqual({ progress: 0.4 });
     expect(describer.library.projects).toEqual([]);
-    finish?.({ language: "English", words: [] });
+    finish?.({ speakers: [], words: [] });
     const project = await pending;
-    expect(project.transcript.words).toEqual([]);
+    expect(wordsOf(describer, project.id)).toEqual([]);
     expect(describer.processing).toBeNull();
   });
 });
@@ -91,12 +110,13 @@ test("progress is visible while processing runs", async () => {
 test("cancelling processing leaves no Project and does not touch the Source", async () => {
   await withSource(async ({ libraryDir, sourcePath }) => {
     const processor: Processor = {
-      process({ signal }) {
+      process(_sourcePath, _language, controls) {
         return new Promise((_, reject) => {
           const fail = () => {
             reject(new Error("Processing cancelled"));
           };
-          if (signal.aborted) {
+          const signal = controls?.signal;
+          if (signal === undefined || signal.aborted) {
             fail();
             return;
           }
@@ -145,14 +165,15 @@ test("a successful process with no speech yields an empty Transcript", async () 
       processor: fixtureProcessor([]),
     });
     const project = await describer.importSource(sourcePath, "English");
-    expect(project.transcript.words).toEqual([]);
+    const opened = describer.openProject(project.id);
+    expect(opened.transcript.utterances).toEqual([]);
     expect(describer.library.projects).toEqual([project]);
   });
 });
 
 test("a processed Transcript persists without an explicit Save", async () => {
   await withSource(async ({ libraryDir, sourcePath }) => {
-    const words: Word[] = [{ text: "hello", start: 0, end: 0.4 }];
+    const words = [timed("w1", "hello", 0, 0.4)];
     const describer = await openDescriber({
       libraryDir,
       processor: fixtureProcessor(words),
@@ -162,7 +183,7 @@ test("a processed Transcript persists without an explicit Save", async () => {
       libraryDir,
       processor: fixtureProcessor([]),
     });
-    expect(reopened.library.projects[0]?.transcript).toEqual(project.transcript);
+    expect(wordsOf(reopened, project.id)).toEqual(words);
   });
 });
 
@@ -211,8 +232,9 @@ test(
     try {
       const describer = await openDescriber({ libraryDir });
       const project = await describer.importSource(sourcePath, "English");
-      expect(project.transcript.words.length).toBeGreaterThan(0);
-      for (const word of project.transcript.words) {
+      const words = wordsOf(describer, project.id);
+      expect(words.length).toBeGreaterThan(0);
+      for (const word of words) {
         expect(word.text.length).toBeGreaterThan(0);
         expect(typeof word.start).toBe("number");
         expect(typeof word.end).toBe("number");

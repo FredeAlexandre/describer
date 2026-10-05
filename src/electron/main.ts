@@ -28,6 +28,8 @@ function openedSnapshot(): {
   hasPicture: boolean;
   playback: OpenedProject["playback"];
   sourceUrl: string | null;
+  transcript: OpenedProject["transcript"];
+  currentWord: OpenedProject["currentWord"] | null;
 } {
   if (opened === undefined) {
     throw new Error("No Project is open");
@@ -40,6 +42,8 @@ function openedSnapshot(): {
     sourceUrl: sourcePresent
       ? pathToFileURL(opened.project.sourcePath).href
       : null,
+    transcript: opened.transcript,
+    currentWord: opened.currentWord ?? null,
   };
 }
 
@@ -49,41 +53,42 @@ ipcMain.handle("describer:open", async () => {
   return { library: describer.library };
 });
 
+const SOURCE_EXTENSIONS = [
+  "mp4",
+  "webm",
+  "mkv",
+  "mov",
+  "avi",
+  "wav",
+  "mp3",
+  "m4a",
+  "aac",
+  "ogg",
+  "flac",
+  "opus",
+];
+
+function requireWindow(): BrowserWindow {
+  if (window === undefined) {
+    throw new Error("Window is not ready");
+  }
+  return window;
+}
+
 ipcMain.handle(
   "describer:importSource",
   async (_event, language: Language) => {
     const current = requireDescriber();
-    if (window === undefined) {
-      throw new Error("Window is not ready");
-    }
-    const picked = await dialog.showOpenDialog(window, {
+    const picked = await dialog.showOpenDialog(requireWindow(), {
       title: "Import a Source",
       properties: ["openFile"],
-      filters: [
-        {
-          name: "Source",
-          extensions: [
-            "mp4",
-            "webm",
-            "mkv",
-            "mov",
-            "avi",
-            "wav",
-            "mp3",
-            "m4a",
-            "aac",
-            "ogg",
-            "flac",
-            "opus",
-          ],
-        },
-      ],
+      filters: [{ name: "Source", extensions: SOURCE_EXTENSIONS }],
     });
     const sourcePath = picked.filePaths[0];
     if (picked.canceled || sourcePath === undefined) {
       return { library: current.library };
     }
-    const target = window;
+    const target = requireWindow();
     const sendProgress = (): void => {
       target.webContents.send("describer:processing", current.processing);
     };
@@ -105,6 +110,78 @@ ipcMain.handle("describer:cancelProcessing", () => {
   requireDescriber().cancelProcessing();
 });
 
+ipcMain.handle("describer:locateSource", async () => {
+  const current = requireDescriber();
+  if (opened === undefined) {
+    throw new Error("No Project is open");
+  }
+  const picked = await dialog.showOpenDialog(requireWindow(), {
+    title: "Locate Source",
+    properties: ["openFile"],
+    filters: [{ name: "Source", extensions: SOURCE_EXTENSIONS }],
+  });
+  const sourcePath = picked.filePaths[0];
+  if (picked.canceled || sourcePath === undefined) {
+    return { library: current.library, opened: openedSnapshot() };
+  }
+  await current.locateSource(opened.project.id, sourcePath);
+  return { library: current.library, opened: openedSnapshot() };
+});
+
+ipcMain.handle("describer:deleteProject", async () => {
+  const current = requireDescriber();
+  if (opened === undefined) {
+    throw new Error("No Project is open");
+  }
+  const confirmed = await dialog.showMessageBox(requireWindow(), {
+    type: "warning",
+    title: "Delete Project",
+    message: "Delete this Project from the Library?",
+    detail: "The Source file is not deleted.",
+    buttons: ["Cancel", "Delete"],
+    defaultId: 0,
+    cancelId: 0,
+  });
+  if (confirmed.response !== 1) {
+    return { library: current.library, deleted: false };
+  }
+  await current.deleteProject(opened.project.id);
+  opened = undefined;
+  return { library: current.library, deleted: true };
+});
+
+ipcMain.handle("describer:exportProject", async () => {
+  const current = requireDescriber();
+  if (opened === undefined) {
+    throw new Error("No Project is open");
+  }
+  const picked = await dialog.showSaveDialog(requireWindow(), {
+    title: "Export Project",
+    defaultPath: `${opened.project.title}.json`,
+    filters: [{ name: "Project", extensions: ["json"] }],
+  });
+  if (picked.canceled || picked.filePath === undefined) {
+    return { library: current.library };
+  }
+  await current.exportProject(opened.project.id, picked.filePath);
+  return { library: current.library };
+});
+
+ipcMain.handle("describer:importProject", async () => {
+  const current = requireDescriber();
+  const picked = await dialog.showOpenDialog(requireWindow(), {
+    title: "Open Project file",
+    properties: ["openFile"],
+    filters: [{ name: "Project", extensions: ["json"] }],
+  });
+  const projectFilePath = picked.filePaths[0];
+  if (picked.canceled || projectFilePath === undefined) {
+    return { library: current.library };
+  }
+  await current.importProject(projectFilePath);
+  return { library: current.library };
+});
+
 ipcMain.handle("describer:openProject", (_event, projectId: string) => {
   opened = requireDescriber().openProject(projectId);
   return openedSnapshot();
@@ -123,6 +200,20 @@ ipcMain.handle("describer:setRate", (_event, rate: PlaybackRate) => {
   }
   opened.setRate(rate);
   return opened.playback;
+});
+
+ipcMain.handle("describer:seekToWord", (_event, wordId: string) => {
+  if (opened === undefined) {
+    throw new Error("No Project is open");
+  }
+  for (const utterance of opened.transcript.utterances) {
+    const word = utterance.words.find((entry) => entry.id === wordId);
+    if (word !== undefined) {
+      opened.seekToWord(word);
+      break;
+    }
+  }
+  return openedSnapshot();
 });
 
 ipcMain.handle(

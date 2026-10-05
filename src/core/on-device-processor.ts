@@ -2,7 +2,13 @@ import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import path from "node:path";
 import { env, pipeline } from "@huggingface/transformers";
-import type { Processor, ProcessorJob, Word } from "./index.js";
+import type {
+  Processor,
+  ProcessorControls,
+  ProcessorResult,
+  Speaker,
+  Word,
+} from "./index.js";
 
 const SAMPLE_RATE = 16000;
 const MODEL_ID = "Xenova/whisper-tiny";
@@ -127,22 +133,40 @@ function wordsFromOutput(output: {
     readonly timestamp: readonly [number, number | null];
   }>;
 }): Word[] {
+  const speakerId = "speaker-1";
   if (output.chunks !== undefined && output.chunks.length > 0) {
-    return output.chunks.flatMap((chunk) => {
+    return output.chunks.flatMap((chunk, index) => {
       const text = chunk.text.trim();
       if (text.length === 0) {
         return [];
       }
       const start = chunk.timestamp[0] ?? 0;
       const end = chunk.timestamp[1] ?? start;
-      return [{ text, start, end: Math.max(end, start) }];
+      return [
+        {
+          id: `w${index + 1}`,
+          text,
+          start,
+          end: Math.max(end, start),
+          speakerId,
+        },
+      ];
     });
   }
   const text = output.text.trim();
   if (text.length === 0) {
     return [];
   }
-  return [{ text, start: 0, end: 0 }];
+  return [{ id: "w1", text, start: 0, end: 0, speakerId }];
+}
+
+const SINGLE_SPEAKER: Speaker = { id: "speaker-1", name: "Speaker 1" };
+
+function resultFromWords(words: Word[]): ProcessorResult {
+  return {
+    speakers: words.length === 0 ? [] : [SINGLE_SPEAKER],
+    words,
+  };
 }
 
 async function loadTranscriber(
@@ -164,12 +188,9 @@ async function loadTranscriber(
 
 export function onDeviceProcessor(): Processor {
   return {
-    async process({
-      sourcePath,
-      language,
-      signal,
-      onProgress,
-    }: ProcessorJob) {
+    async process(sourcePath, language, controls?: ProcessorControls) {
+      const signal = controls?.signal ?? new AbortController().signal;
+      const onProgress = controls?.onProgress ?? (() => {});
       throwIfAborted(signal);
       onProgress(0.05);
       const audio = await decodeSourceAudio(sourcePath, signal);
@@ -186,10 +207,7 @@ export function onDeviceProcessor(): Processor {
       });
       throwIfAborted(signal);
       onProgress(1);
-      return {
-        language,
-        words: wordsFromOutput(output),
-      };
+      return resultFromWords(wordsFromOutput(output));
     },
   };
 }
