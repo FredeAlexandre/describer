@@ -10,6 +10,11 @@ import type {
   Word,
 } from "../core/index.js";
 
+export type SearchHitView = {
+  readonly project: Project;
+  readonly word: Word | null;
+};
+
 export type OpenedView = {
   readonly project: Project;
   readonly hasPicture: boolean;
@@ -63,4 +68,8 @@ contextBridge.exposeInMainWorld("describer", {
     ipcRenderer.invoke("describer:exportVtt"),
   importProject: (): Promise<{ library: Library }> =>
     ipcRenderer.invoke("describer:importProject"),
+  searchLibrary: (query: string): Promise<readonly SearchHitView[]> =>
+    ipcRenderer.invoke("describer:searchLibrary", query),
+  findInTranscript: (query: string): Promise<readonly Word[]> =>
+    ipcRenderer.invoke("describer:findInTranscript", query),
 });

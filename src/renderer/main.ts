@@ -58,6 +58,11 @@ type OpenedView = {
   readonly currentWord: WordView | null;
 };
 
+type SearchHitView = {
+  readonly project: ProjectView;
+  readonly word: WordView | null;
+};
+
 declare global {
   interface Window {
     describer: {
@@ -85,6 +90,8 @@ declare global {
       exportSrt: () => Promise<{ library: LibraryView }>;
       exportVtt: () => Promise<{ library: LibraryView }>;
       importProject: () => Promise<{ library: LibraryView }>;
+      searchLibrary: (query: string) => Promise<readonly SearchHitView[]>;
+      findInTranscript: (query: string) => Promise<readonly WordView[]>;
     };
   }
 }
@@ -95,6 +102,9 @@ let library: LibraryView;
 let opened: OpenedView | undefined;
 let importLanguage: Language = "English";
 let processing: ProcessingView | null = null;
+let libraryQuery = "";
+let libraryHits: readonly SearchHitView[] = [];
+let transcriptQuery = "";
 
 function recordedAtDate(value: Date | string): Date {
   return value instanceof Date ? value : new Date(value);
@@ -184,6 +194,42 @@ async function openProject(projectId: string): Promise<void> {
     media.addEventListener("timeupdate", () => {
       highlightCurrentWord(media.currentTime);
     });
+  }
+}
+
+async function openHit(hit: SearchHitView): Promise<void> {
+  await openProject(hit.project.id);
+  if (hit.word !== null) {
+    await seekToWord(hit.word.id);
+  }
+}
+
+async function searchLibrary(query: string): Promise<void> {
+  libraryQuery = query;
+  if (query.trim() === "") {
+    libraryHits = [];
+  } else {
+    libraryHits = await window.describer.searchLibrary(query);
+  }
+  render();
+  const search = document.querySelector(
+    'input[aria-label="Search the Library"]',
+  );
+  if (search instanceof HTMLInputElement) {
+    search.focus();
+    search.setSelectionRange(search.value.length, search.value.length);
+  }
+}
+
+async function findInTranscript(query: string): Promise<void> {
+  transcriptQuery = query;
+  if (opened === undefined || query.trim() === "") {
+    return;
+  }
+  const found = await window.describer.findInTranscript(query);
+  const first = found[0];
+  if (first !== undefined) {
+    await seekToWord(first.id);
   }
 }
 
@@ -330,6 +376,48 @@ function renderLibraryList(root: HTMLElement): void {
     row.className = "processing-row";
     row.append(status, cancel);
     root.append(row);
+  }
+
+  const search = document.createElement("input");
+  search.type = "search";
+  search.value = libraryQuery;
+  search.placeholder = "Search the Library";
+  search.setAttribute("aria-label", "Search the Library");
+  search.addEventListener("input", () => {
+    void searchLibrary(search.value);
+  });
+  root.append(search);
+
+  if (libraryQuery.trim() !== "") {
+    if (libraryHits.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "empty";
+      empty.textContent = "No matching Projects.";
+      root.append(empty);
+      return;
+    }
+    const list = document.createElement("ul");
+    list.className = "projects";
+    for (const hit of libraryHits) {
+      const item = document.createElement("li");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "project";
+      if (opened?.project.id === hit.project.id) {
+        button.classList.add("selected");
+      }
+      button.textContent =
+        hit.word === null
+          ? hit.project.title
+          : `${hit.project.title} — ${hit.word.text}`;
+      button.addEventListener("click", () => {
+        void openHit(hit);
+      });
+      item.append(button);
+      list.append(item);
+    }
+    root.append(list);
+    return;
   }
 
   if (library.projects.length === 0) {
@@ -504,6 +592,21 @@ function renderTranscript(root: HTMLElement): void {
   if (!opened.transcript.editable) {
     pane.setAttribute("aria-readonly", "true");
   }
+
+  const find = document.createElement("input");
+  find.type = "search";
+  find.value = transcriptQuery;
+  find.placeholder = "Find in Transcript";
+  find.setAttribute("aria-label", "Find in Transcript");
+  find.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      void findInTranscript(find.value);
+    }
+  });
+  find.addEventListener("change", () => {
+    transcriptQuery = find.value;
+  });
+  pane.append(find);
 
   if (opened.transcript.utterances.length === 0) {
     const empty = document.createElement("p");

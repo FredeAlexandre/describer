@@ -216,6 +216,20 @@ ipcMain.handle("describer:importProject", async () => {
   return { library: current.library };
 });
 
+ipcMain.handle("describer:searchLibrary", (_event, query: string) => {
+  return requireDescriber().searchLibrary(query).map((hit) => ({
+    project: hit.project,
+    word: hit.word ?? null,
+  }));
+});
+
+ipcMain.handle("describer:findInTranscript", (_event, query: string) => {
+  if (opened === undefined) {
+    throw new Error("No Project is open");
+  }
+  return opened.findInTranscript(query);
+});
+
 ipcMain.handle("describer:openProject", (_event, projectId: string) => {
   opened = requireDescriber().openProject(projectId);
   return openedSnapshot();

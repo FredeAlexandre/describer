@@ -66,6 +66,12 @@ export type OpenedProject = {
   setRate(rate: PlaybackRate): void;
   play(): boolean;
   seekToWord(word: Word): void;
+  findInTranscript(query: string): readonly Word[];
+};
+
+export type SearchHit = {
+  readonly project: Project;
+  readonly word: Word | undefined;
 };
 
 export type Describer = {
@@ -73,6 +79,7 @@ export type Describer = {
   readonly processing: Processing | null;
   importSource(sourcePath: string, language?: Language): Promise<Project>;
   cancelProcessing(): void;
+  searchLibrary(query: string): readonly SearchHit[];
   updateProject(
     projectId: string,
     patch: {
@@ -250,6 +257,47 @@ function formatVtt(cues: readonly CaptionCue[]): string {
     )
     .join("\n");
   return `WEBVTT\n\n${body}`;
+}
+
+function findPhraseStarts(words: readonly Word[], needle: string): Word[] {
+  if (needle.length === 0 || words.length === 0) {
+    return [];
+  }
+  const starts: number[] = [];
+  let offset = 0;
+  const lowered = words.map((word, index) => {
+    if (index > 0) {
+      offset += 1;
+    }
+    starts.push(offset);
+    const text = word.text.toLowerCase();
+    offset += text.length;
+    return text;
+  });
+  const joined = lowered.join(" ");
+  const hits: Word[] = [];
+  let from = 0;
+  while (from <= joined.length - needle.length) {
+    const index = joined.indexOf(needle, from);
+    if (index < 0) {
+      break;
+    }
+    let wordIndex = 0;
+    for (let i = 0; i < starts.length; i++) {
+      const start = starts[i];
+      if (start !== undefined && start <= index) {
+        wordIndex = i;
+      } else {
+        break;
+      }
+    }
+    const word = words[wordIndex];
+    if (word !== undefined) {
+      hits.push(word);
+    }
+    from = index + 1;
+  }
+  return hits;
 }
 
 function utterancesFrom(
@@ -442,11 +490,17 @@ export async function openDescriber(
     await writeFile(libraryFile(libraryDir), `${JSON.stringify(stored, null, 2)}\n`);
   }
 
+  function listedProjects(): Project[] {
+    return [...projects].sort(
+      (left, right) => right.recordedAt.getTime() - left.recordedAt.getTime(),
+    );
+  }
+
   return {
     get library(): Library {
       return {
         path: libraryDir,
-        projects: [...projects],
+        projects: listedProjects(),
         lastUsedLanguage,
       };
     },
@@ -614,6 +668,30 @@ export async function openDescriber(
       await persist();
       return project;
     },
+    searchLibrary(query: string): readonly SearchHit[] {
+      const needle = query.trim().toLowerCase();
+      if (needle.length === 0) {
+        return [];
+      }
+      const hits: SearchHit[] = [];
+      for (const project of listedProjects()) {
+        if (project.title.toLowerCase().includes(needle)) {
+          hits.push({ project, word: undefined });
+        }
+        const stored = transcripts.get(project.id) ?? EMPTY_TRANSCRIPT;
+        if (
+          stored.speakers.some((speaker) =>
+            speaker.name.toLowerCase().includes(needle),
+          )
+        ) {
+          hits.push({ project, word: undefined });
+        }
+        for (const word of findPhraseStarts(stored.words, needle)) {
+          hits.push({ project, word });
+        }
+      }
+      return hits;
+    },
     openProject(projectId: string): OpenedProject {
       const project = projects.find((entry) => entry.id === projectId);
       if (project === undefined) {
@@ -671,6 +749,13 @@ export async function openDescriber(
         },
         seekToWord(word: Word): void {
           cursor.seek(word.start);
+        },
+        findInTranscript(query: string): readonly Word[] {
+          const needle = query.trim().toLowerCase();
+          if (needle.length === 0) {
+            return [];
+          }
+          return findPhraseStarts(stored.words, needle);
         },
       };
     },
