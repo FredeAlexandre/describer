@@ -1168,27 +1168,42 @@ function render(): void {
   }
 }
 
-const started = await window.describer.open();
-library = started.library;
-importLanguage = library.lastUsedLanguage;
-window.describer.onProcessing((next) => {
-  processing = next;
-  if (opened !== undefined) {
-    void window.describer.getOpened().then((snapshot) => {
-      if (snapshot !== null) {
-        opened = snapshot;
-      }
-      render();
-    });
-    return;
-  }
-  render();
-});
-window.describer.onLibrary((next) => {
-  library = next;
+async function bootDescriber(): Promise<void> {
+  const started = await window.describer.open();
+  library = started.library;
   importLanguage = library.lastUsedLanguage;
+  window.describer.onProcessing((next) => {
+    processing = next;
+    if (opened !== undefined) {
+      void window.describer.getOpened().then((snapshot) => {
+        if (snapshot !== null) {
+          opened = snapshot;
+        }
+        render();
+      });
+      return;
+    }
+    render();
+  });
+  window.describer.onLibrary((next) => {
+    library = next;
+    importLanguage = library.lastUsedLanguage;
+    render();
+  });
   render();
-});
-render();
+}
+
+if (
+  import.meta.env.DEV &&
+  (new URLSearchParams(window.location.search).has("variant") ||
+    typeof window.describer === "undefined")
+) {
+  const { mountPreferencesPrototype } = await import(
+    "./preferences-prototype"
+  );
+  mountPreferencesPrototype();
+} else {
+  await bootDescriber();
+}
 
 export {};

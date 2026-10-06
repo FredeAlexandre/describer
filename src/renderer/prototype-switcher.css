@@ -1,0 +1,33 @@
+.proto-switcher {
+  position: fixed;
+  z-index: 40;
+  left: 50%;
+  bottom: 1.25rem;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.35rem 0.45rem;
+  background: #f4f0e6;
+  color: #111;
+  border-radius: 999px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.45);
+  font: 600 0.8rem/1 system-ui, sans-serif;
+}
+
+.proto-switcher-arrow {
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: #111;
+  color: #f4f0e6;
+  cursor: pointer;
+}
+
+.proto-switcher-label {
+  min-width: 12rem;
+  text-align: center;
+  letter-spacing: 0.02em;
+}
