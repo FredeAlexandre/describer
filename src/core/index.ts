@@ -198,6 +198,20 @@ export type Processor = {
   ): Promise<ProcessorResult>;
 };
 
+export class BindTimeGpuFailure extends Error {
+  constructor(message = "CUDA failed to load") {
+    super(message);
+    this.name = "BindTimeGpuFailure";
+  }
+}
+
+export class MidJobGpuFailure extends Error {
+  constructor(message = "GPU failed after CUDA session") {
+    super(message);
+    this.name = "MidJobGpuFailure";
+  }
+}
+
 export function fixtureProcessor(
   words: readonly Word[] = [],
   speakers?: readonly Speaker[],
@@ -1108,22 +1122,46 @@ export async function openDescriber(
       currentMachine(),
       latch,
     );
+    const controls: ProcessorControls = {
+      signal: controller.signal,
+      onProgress: (progress) => {
+        processing = { progress };
+      },
+    };
     try {
-      const processed = await processor.process(
-        sourcePath,
-        language,
-        compute,
-        {
-          signal: controller.signal,
-          onProgress: (progress) => {
-            processing = { progress };
-          },
-        },
-      );
-      if (controller.signal.aborted) {
-        throw new Error("Processing cancelled");
+      try {
+        const processed = await processor.process(
+          sourcePath,
+          language,
+          compute,
+          controls,
+        );
+        if (controller.signal.aborted) {
+          throw new Error("Processing cancelled");
+        }
+        return processed;
+      } catch (error) {
+        if (controller.signal.aborted) {
+          throw new Error("Processing cancelled");
+        }
+        if (compute === "GPU" && error instanceof BindTimeGpuFailure) {
+          latch = true;
+          const processed = await processor.process(
+            sourcePath,
+            language,
+            "CPU",
+            controls,
+          );
+          if (controller.signal.aborted) {
+            throw new Error("Processing cancelled");
+          }
+          return processed;
+        }
+        if (compute === "GPU" && error instanceof MidJobGpuFailure) {
+          latch = true;
+        }
+        throw error;
       }
-      return processed;
     } finally {
       processing = null;
       if (activeImport === controller) {
