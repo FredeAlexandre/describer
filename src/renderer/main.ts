@@ -72,6 +72,40 @@ type SearchHitView = {
   readonly word: WordView | null;
 };
 
+type ComputePreference = "GPU" | "CPU";
+
+type DeviceFactView = {
+  readonly name: string;
+};
+
+type StackFactsView = {
+  readonly driver: { readonly present: boolean; readonly version: string | null };
+  readonly cuda13: boolean;
+  readonly cudnn9: boolean;
+};
+
+type PreferencesView = {
+  readonly compute: ComputePreference;
+};
+
+type MachineView = {
+  readonly devices: readonly DeviceFactView[];
+  readonly stack: StackFactsView;
+  readonly latch: boolean;
+  readonly gpuReady: boolean;
+};
+
+type NextJobView = {
+  readonly compute: ComputePreference;
+  readonly whyCpu: string | null;
+};
+
+type PreferencesPageView = {
+  readonly preferences: PreferencesView;
+  readonly machine: MachineView;
+  readonly nextJob: NextJobView;
+};
+
 declare global {
   interface Window {
     describer: {
@@ -132,6 +166,10 @@ declare global {
       importProject: () => Promise<{ library: LibraryView }>;
       searchLibrary: (query: string) => Promise<readonly SearchHitView[]>;
       findInTranscript: (query: string) => Promise<readonly WordView[]>;
+      preferences: () => Promise<PreferencesPageView>;
+      setComputePreference: (
+        compute: ComputePreference,
+      ) => Promise<PreferencesPageView>;
     };
   }
 }
@@ -146,6 +184,8 @@ let libraryQuery = "";
 let libraryHits: readonly SearchHitView[] = [];
 let transcriptQuery = "";
 let selectedWordIds: string[] = [];
+let showingPreferences = false;
+let preferencesPage: PreferencesPageView | undefined;
 
 const NEW_SPEAKER = "__new__";
 
@@ -244,6 +284,7 @@ async function exportVtt(): Promise<void> {
 }
 
 async function openProject(projectId: string): Promise<void> {
+  showingPreferences = false;
   opened = await window.describer.openProject(projectId);
   render();
   const media = mediaElement();
@@ -257,6 +298,17 @@ async function openProject(projectId: string): Promise<void> {
       void followCorePlayback(media);
     });
   }
+}
+
+async function openPreferences(): Promise<void> {
+  showingPreferences = true;
+  preferencesPage = await window.describer.preferences();
+  render();
+}
+
+async function setComputePreference(compute: ComputePreference): Promise<void> {
+  preferencesPage = await window.describer.setComputePreference(compute);
+  render();
 }
 
 async function openHit(hit: SearchHitView): Promise<void> {
@@ -699,6 +751,22 @@ function renderLibraryList(root: HTMLElement): void {
   });
   root.append(search);
 
+  const prefsWrap = document.createElement("p");
+  prefsWrap.className = "prefs-nav";
+  const prefs = document.createElement("button");
+  prefs.type = "button";
+  prefs.className = "project";
+  prefs.textContent = "Preferences";
+  if (showingPreferences) {
+    prefs.classList.add("selected");
+    prefs.setAttribute("aria-current", "page");
+  }
+  prefs.addEventListener("click", () => {
+    void openPreferences();
+  });
+  prefsWrap.append(prefs);
+  root.append(prefsWrap);
+
   if (libraryQuery.trim() !== "") {
     if (libraryHits.length === 0) {
       const empty = document.createElement("p");
@@ -714,7 +782,7 @@ function renderLibraryList(root: HTMLElement): void {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "project";
-      if (opened?.project.id === hit.project.id) {
+      if (!showingPreferences && opened?.project.id === hit.project.id) {
         button.classList.add("selected");
       }
       button.textContent =
@@ -746,7 +814,7 @@ function renderLibraryList(root: HTMLElement): void {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "project";
-    if (opened?.project.id === project.id) {
+    if (!showingPreferences && opened?.project.id === project.id) {
       button.classList.add("selected");
     }
     button.textContent = project.title;
@@ -1124,6 +1192,152 @@ function renderTranscript(root: HTMLElement): void {
   root.append(pane);
 }
 
+function mark(ok: boolean): string {
+  return ok ? "Yes" : "No";
+}
+
+function driverLabel(stack: StackFactsView): string {
+  if (stack.driver.present && stack.driver.version !== null) {
+    return stack.driver.version;
+  }
+  return "Missing";
+}
+
+function renderPreferences(root: HTMLElement): void {
+  const page = preferencesPage;
+  if (page === undefined) {
+    return;
+  }
+  const pane = document.createElement("section");
+  pane.className = "preferences";
+  pane.append(elHeading("This machine", "h2"));
+
+  const devices = document.createElement("div");
+  devices.className = "pref-devices";
+  if (page.machine.devices.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "pref-devices-empty";
+    const title = document.createElement("p");
+    title.className = "pref-devices-empty-title";
+    title.textContent = "No NVIDIA GPU";
+    const hint = document.createElement("p");
+    hint.className = "empty";
+    hint.textContent =
+      "CPU is not a Device. The Processor still runs; next job uses CPU.";
+    empty.append(title, hint);
+    devices.append(empty);
+  } else {
+    for (const device of page.machine.devices) {
+      const card = document.createElement("article");
+      card.className = "pref-device";
+      const kicker = document.createElement("p");
+      kicker.className = "pref-device-kicker";
+      kicker.textContent = "Device";
+      const name = document.createElement("h3");
+      name.textContent = device.name;
+      card.append(kicker, name);
+      devices.append(card);
+    }
+    const hint = document.createElement("p");
+    hint.className = "pref-hint";
+    hint.textContent = "The Processor does not pick a Device.";
+    devices.append(hint);
+  }
+  pane.append(devices);
+
+  const report = document.createElement("div");
+  report.className = "pref-report";
+  const heading = document.createElement("div");
+  heading.className = "pref-ready-row";
+  heading.append(elHeading("GPU is ready", "h3"));
+  const readyMark = document.createElement("span");
+  readyMark.className = page.machine.gpuReady ? "pref-ready" : "pref-unready";
+  readyMark.textContent = mark(page.machine.gpuReady);
+  heading.append(readyMark);
+  report.append(heading);
+
+  const checks = document.createElement("ul");
+  checks.className = "pref-checks";
+  const items: Array<[string, boolean, string]> = [
+    [
+      "NVIDIA GPU present",
+      page.machine.devices.length > 0,
+      page.machine.devices.length === 0
+        ? "None"
+        : `${page.machine.devices.length} detected`,
+    ],
+    [
+      "NVIDIA driver",
+      page.machine.stack.driver.present,
+      driverLabel(page.machine.stack),
+    ],
+    ["CUDA 13", page.machine.stack.cuda13, mark(page.machine.stack.cuda13)],
+    ["cuDNN 9", page.machine.stack.cudnn9, mark(page.machine.stack.cudnn9)],
+  ];
+  if (page.machine.latch) {
+    items.push(["This process", false, "GPU failed"]);
+  }
+  for (const [label, ok, detail] of items) {
+    const item = document.createElement("li");
+    item.className = ok ? "ok" : "fail";
+    const checkMark = document.createElement("span");
+    checkMark.className = "pref-check-mark";
+    checkMark.textContent = ok ? "●" : "○";
+    const checkLabel = document.createElement("span");
+    checkLabel.className = "pref-check-label";
+    checkLabel.textContent = label;
+    const checkDetail = document.createElement("span");
+    checkDetail.className = "pref-check-detail";
+    checkDetail.textContent = detail;
+    item.append(checkMark, checkLabel, checkDetail);
+    checks.append(item);
+  }
+  report.append(checks);
+  pane.append(report);
+
+  const choice = document.createElement("div");
+  choice.className = "pref-choice";
+  choice.append(elHeading("Processor", "h3"));
+  const choiceHint = document.createElement("p");
+  choiceHint.className = "pref-hint";
+  choiceHint.textContent =
+    "Jobs use GPU only when it is ready and this process has not failed.";
+  choice.append(choiceHint);
+  const radios = document.createElement("div");
+  radios.className = "pref-radios";
+  for (const value of ["GPU", "CPU"] as const) {
+    const label = document.createElement("label");
+    label.className = "pref-radio";
+    const input = document.createElement("input");
+    input.type = "radio";
+    input.name = "processor-preference";
+    input.value = value;
+    input.checked = page.preferences.compute === value;
+    input.addEventListener("change", () => {
+      void setComputePreference(value);
+    });
+    label.append(input, document.createTextNode(value));
+    radios.append(label);
+  }
+  choice.append(radios);
+  const next = document.createElement("p");
+  next.className = "pref-next";
+  const reason = page.nextJob.whyCpu;
+  next.textContent =
+    reason === null
+      ? "Next job: GPU"
+      : `Next job: CPU — ${reason}`;
+  choice.append(next);
+  pane.append(choice);
+  root.append(pane);
+}
+
+function elHeading(text: string, tag: "h2" | "h3"): HTMLHeadingElement {
+  const node = document.createElement(tag);
+  node.textContent = text;
+  return node;
+}
+
 function render(): void {
   const root = document.getElementById("app");
   if (root === null) {
@@ -1133,6 +1347,10 @@ function render(): void {
   try {
     root.replaceChildren();
     renderLibraryList(root);
+    if (showingPreferences) {
+      renderPreferences(root);
+      return;
+    }
     if (opened === undefined) {
       return;
     }
