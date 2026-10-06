@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   openDescriber,
+  type ComputePreference,
   type Describer,
   type Language,
   type OpenedProject,
@@ -47,6 +48,19 @@ function openedSnapshot(): {
       : null,
     transcript: opened.transcript,
     currentWord: opened.currentWord ?? null,
+  };
+}
+
+function preferencesSnapshot(): {
+  preferences: Describer["preferences"];
+  machine: Describer["machine"];
+  nextJob: Describer["nextJob"];
+} {
+  const current = requireDescriber();
+  return {
+    preferences: current.preferences,
+    machine: current.machine,
+    nextJob: current.nextJob,
   };
 }
 
@@ -326,6 +340,18 @@ ipcMain.handle("describer:findInTranscript", (_event, query: string) => {
   }
   return opened.findInTranscript(query);
 });
+
+ipcMain.handle("describer:preferences", () => {
+  return preferencesSnapshot();
+});
+
+ipcMain.handle(
+  "describer:setComputePreference",
+  async (_event, compute: ComputePreference) => {
+    await requireDescriber().setComputePreference(compute);
+    return preferencesSnapshot();
+  },
+);
 
 function requireOpened(): OpenedProject {
   if (opened === undefined) {

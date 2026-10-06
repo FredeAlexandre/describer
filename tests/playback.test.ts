@@ -183,11 +183,11 @@ test("opening a Project does not play the Source while processing is still in fl
       libraryDir,
       now: () => 0,
       processor: {
-        process(_sourcePath, _language, controls) {
+        process(_sourcePath, _language, compute, controls) {
           return new Promise((resolve) => {
             finish = () => {
               void fixtureProcessor()
-                .process(_sourcePath, _language, controls)
+                .process(_sourcePath, _language, compute, controls)
                 .then(resolve);
             };
           });

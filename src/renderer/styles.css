@@ -11,7 +11,8 @@ body {
   padding: 0 1.5rem;
 }
 
-#app:has(.editor) {
+#app:has(.editor),
+#app:has(.preferences) {
   max-width: 80rem;
   display: grid;
   grid-template-columns: 16rem minmax(0, 1fr);
@@ -158,4 +159,161 @@ audio {
 .voice-suggestion {
   color: #9ab;
   font-size: 0.8rem;
+}
+
+.prefs-nav {
+  margin: 0 0 1rem;
+}
+
+.prefs-nav .project {
+  width: 100%;
+  text-align: left;
+}
+
+.preferences {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.preferences h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.35rem;
+}
+
+.pref-hint {
+  color: #bbb;
+  margin: 0 0 1rem;
+  font-size: 0.9rem;
+}
+
+.pref-ready {
+  color: #9c6;
+  font-weight: 600;
+}
+
+.pref-unready {
+  color: #d88;
+  font-weight: 600;
+}
+
+.pref-devices {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.pref-device {
+  padding: 1rem 1.1rem;
+  background: #181818;
+  border-left: 3px solid #666;
+}
+
+.pref-device-kicker {
+  margin: 0 0 0.2rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #888;
+}
+
+.pref-device h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 500;
+}
+
+.pref-devices-empty {
+  padding: 2.5rem 1rem;
+  text-align: center;
+  background: #161616;
+  border: 1px dashed #444;
+}
+
+.pref-devices-empty-title {
+  margin: 0 0 0.4rem;
+  font-size: 1.2rem;
+}
+
+.pref-report {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.pref-ready-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+}
+
+.pref-ready-row h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.pref-checks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0;
+}
+
+.pref-checks li {
+  display: grid;
+  grid-template-columns: 1.2rem 1fr auto;
+  gap: 0.6rem;
+  align-items: center;
+  padding: 0.55rem 0;
+  border-top: 1px solid #2a2a2a;
+  font-size: 0.92rem;
+}
+
+.pref-check-mark {
+  color: #555;
+}
+
+.pref-checks .ok .pref-check-mark {
+  color: #9c6;
+}
+
+.pref-checks .fail .pref-check-mark {
+  color: #d88;
+}
+
+.pref-check-detail {
+  color: #888;
+  font-variant-numeric: tabular-nums;
+}
+
+.pref-choice {
+  padding-top: 0.5rem;
+  border-top: 1px solid #333;
+}
+
+.pref-choice h3 {
+  margin: 0 0 0.35rem;
+  font-size: 0.85rem;
+  color: #999;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.pref-radios {
+  display: flex;
+  gap: 1.25rem;
+  margin: 0.5rem 0;
+}
+
+.pref-radio {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.pref-next {
+  margin: 0.5rem 0 0;
+  font-size: 0.9rem;
+  color: #ccc;
 }

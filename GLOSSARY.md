@@ -38,6 +38,16 @@ _Avoid_: Quote, snippet, evidence, copy
 A locally stored profile of how someone sounds. It is used only to suggest a Speaker name on a new Project; the user must accept or replace the suggestion. A Voice is not a Speaker.
 _Avoid_: Person, speaker profile, embedding
 
+### Processing
+
+**Processor**:
+The local producer of a Transcript from a Source.
+_Avoid_: Engine, pipeline, STT service, sidecar, transcriber, cloud STT
+
+**Device**:
+A physical NVIDIA GPU present on this machine. CPU is not a Device, and a detected Device does not mean GPU is ready.
+_Avoid_: Source, accelerator, adapter, backend, execution provider, media device, capture device
+
 ### Persistence
 
 **Project**:
@@ -51,3 +61,7 @@ _Avoid_: Catalog, vault, workspace, collection, database, folder
 **Export**:
 A derived file generated from a Project. Markdown and PDF are the readable Transcript (title, recorded-at, language, Speakers, timestamps, Utterances). SRT and VTT are captions without Speaker names. Editing an Export does not change the Transcript.
 _Avoid_: Download, report, caption file
+
+**Preferences**:
+App-wide choices for how Describer runs on this machine, including whether the Processor runs on GPU or CPU. Detected Devices and whether GPU is ready are machine facts, not Preferences.
+_Avoid_: Settings, options, configuration, config

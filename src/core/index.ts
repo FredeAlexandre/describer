@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { onDeviceProcessor } from "./on-device-processor.js";
+import { probeMachine } from "./machine-facts.js";
 
 export type Language = "French" | "English";
 
@@ -112,9 +113,49 @@ export type SearchHit = {
   readonly word: Word | undefined;
 };
 
+export type ComputePreference = "GPU" | "CPU";
+
+export type DeviceFact = {
+  readonly name: string;
+};
+
+export type StackFacts = {
+  readonly driver: {
+    readonly present: boolean;
+    readonly version: string | null;
+  };
+  readonly cuda13: boolean;
+  readonly cudnn9: boolean;
+};
+
+export type MachineProbe = {
+  readonly devices: readonly DeviceFact[];
+  readonly stack: StackFacts;
+};
+
+export type Preferences = {
+  readonly compute: ComputePreference;
+};
+
+export type Machine = {
+  readonly devices: readonly DeviceFact[];
+  readonly stack: StackFacts;
+  readonly latch: boolean;
+  readonly gpuReady: boolean;
+};
+
+export type NextJob = {
+  readonly compute: ComputePreference;
+  readonly whyCpu: string | null;
+};
+
 export type Describer = {
   readonly library: Library;
   readonly processing: Processing | null;
+  readonly preferences: Preferences;
+  readonly machine: Machine;
+  readonly nextJob: NextJob;
+  setComputePreference(compute: ComputePreference): Promise<void>;
   importSource(sourcePath: string, language?: Language): Promise<Project>;
   cancelProcessing(): void;
   searchLibrary(query: string): readonly SearchHit[];
@@ -152,9 +193,24 @@ export type Processor = {
   process(
     sourcePath: string,
     language: Language,
+    compute: ComputePreference,
     controls?: ProcessorControls,
   ): Promise<ProcessorResult>;
 };
+
+export class BindTimeGpuFailure extends Error {
+  constructor(message = "CUDA failed to load") {
+    super(message);
+    this.name = "BindTimeGpuFailure";
+  }
+}
+
+export class MidJobGpuFailure extends Error {
+  constructor(message = "GPU failed after CUDA session") {
+    super(message);
+    this.name = "MidJobGpuFailure";
+  }
+}
 
 export function fixtureProcessor(
   words: readonly Word[] = [],
@@ -171,7 +227,7 @@ export function fixtureProcessor(
       };
     });
   return {
-    async process(_sourcePath, _language, controls) {
+    async process(_sourcePath, _language, _compute, controls) {
       if (controls?.signal.aborted === true) {
         throw new Error("Processing cancelled");
       }
@@ -183,8 +239,10 @@ export function fixtureProcessor(
 
 export type OpenDescriberOptions = {
   readonly libraryDir?: string;
+  readonly configDir?: string;
   readonly now?: () => number;
   readonly processor?: Processor;
+  readonly machine?: MachineProbe;
 };
 
 type StoredSpeakerSuggestion = {
@@ -751,6 +809,46 @@ class PlaybackCursor {
   }
 }
 
+function gpuReady(machine: MachineProbe): boolean {
+  return (
+    machine.devices.length > 0 &&
+    machine.stack.driver.present &&
+    machine.stack.cuda13 &&
+    machine.stack.cudnn9
+  );
+}
+
+function jobCompute(
+  preference: ComputePreference,
+  machine: MachineProbe,
+  latch: boolean,
+): ComputePreference {
+  if (preference === "GPU" && gpuReady(machine) && !latch) {
+    return "GPU";
+  }
+  return "CPU";
+}
+
+function whyCpu(
+  preference: ComputePreference,
+  machine: MachineProbe,
+  latch: boolean,
+): string | null {
+  if (jobCompute(preference, machine, latch) === "GPU") {
+    return null;
+  }
+  if (preference === "CPU") {
+    return "You chose CPU.";
+  }
+  if (latch) {
+    return "GPU failed in this process. Later jobs use CPU until you pick CPU, then GPU, or quit Describer.";
+  }
+  if (machine.devices.length === 0) {
+    return "No NVIDIA GPU on this machine. Preference is still GPU; this job uses CPU, silently.";
+  }
+  return "GPU is not ready (driver, CUDA 13, or cuDNN 9). Preference is still GPU; this job uses CPU, silently.";
+}
+
 function defaultLibraryDir(): string {
   return path.join(
     process.env.XDG_DATA_HOME ?? path.join(homedir(), ".local", "share"),
@@ -761,6 +859,48 @@ function defaultLibraryDir(): string {
 
 function libraryFile(libraryDir: string): string {
   return path.join(libraryDir, "library.json");
+}
+
+function defaultConfigDir(): string {
+  return path.join(
+    process.env.XDG_CONFIG_HOME ?? path.join(homedir(), ".config"),
+    "describer",
+  );
+}
+
+function preferencesFile(configDir: string): string {
+  return path.join(configDir, "preferences.json");
+}
+
+type StoredPreferences = {
+  readonly compute?: unknown;
+};
+
+async function loadPreferences(configDir: string): Promise<ComputePreference> {
+  try {
+    const raw = await readFile(preferencesFile(configDir), "utf8");
+    const stored = JSON.parse(raw) as StoredPreferences;
+    if (stored.compute === "CPU" || stored.compute === "GPU") {
+      return stored.compute;
+    }
+    return "GPU";
+  } catch (error) {
+    if (isMissingFile(error)) {
+      return "GPU";
+    }
+    throw error;
+  }
+}
+
+async function persistPreferences(
+  configDir: string,
+  compute: ComputePreference,
+): Promise<void> {
+  await mkdir(configDir, { recursive: true });
+  await writeFile(
+    preferencesFile(configDir),
+    `${JSON.stringify({ compute }, null, 2)}\n`,
+  );
 }
 
 function isMissingFile(error: unknown): boolean {
@@ -851,6 +991,7 @@ export async function openDescriber(
 ): Promise<Describer> {
   const libraryDir = options.libraryDir ?? defaultLibraryDir();
   await mkdir(libraryDir, { recursive: true });
+  const configDir = options.configDir ?? defaultConfigDir();
 
   const loaded = await loadLibrary(libraryDir);
   const projects: Project[] = loaded.projects;
@@ -859,6 +1000,8 @@ export async function openDescriber(
   let lastUsedLanguage: Language = loaded.lastUsedLanguage;
   const now = options.now ?? Date.now;
   const processor = options.processor ?? onDeviceProcessor();
+  let computePreference: ComputePreference = await loadPreferences(configDir);
+  let latch = false;
   let processing: Processing | null = null;
   let activeImport: AbortController | undefined;
   const transcriptEpoch = new Map<string, number>();
@@ -963,6 +1106,10 @@ export async function openDescriber(
     };
   }
 
+  function currentMachine(): MachineProbe {
+    return options.machine ?? probeMachine();
+  }
+
   async function runProcessor(
     sourcePath: string,
     language: Language,
@@ -970,17 +1117,51 @@ export async function openDescriber(
     const controller = new AbortController();
     activeImport = controller;
     processing = { progress: 0 };
+    const compute = jobCompute(
+      computePreference,
+      currentMachine(),
+      latch,
+    );
+    const controls: ProcessorControls = {
+      signal: controller.signal,
+      onProgress: (progress) => {
+        processing = { progress };
+      },
+    };
     try {
-      const processed = await processor.process(sourcePath, language, {
-        signal: controller.signal,
-        onProgress: (progress) => {
-          processing = { progress };
-        },
-      });
-      if (controller.signal.aborted) {
-        throw new Error("Processing cancelled");
+      try {
+        const processed = await processor.process(
+          sourcePath,
+          language,
+          compute,
+          controls,
+        );
+        if (controller.signal.aborted) {
+          throw new Error("Processing cancelled");
+        }
+        return processed;
+      } catch (error) {
+        if (controller.signal.aborted) {
+          throw new Error("Processing cancelled");
+        }
+        if (compute === "GPU" && error instanceof BindTimeGpuFailure) {
+          latch = true;
+          const processed = await processor.process(
+            sourcePath,
+            language,
+            "CPU",
+            controls,
+          );
+          if (controller.signal.aborted) {
+            throw new Error("Processing cancelled");
+          }
+          return processed;
+        }
+        if (compute === "GPU" && error instanceof MidJobGpuFailure) {
+          latch = true;
+        }
+        throw error;
       }
-      return processed;
     } finally {
       processing = null;
       if (activeImport === controller) {
@@ -999,6 +1180,33 @@ export async function openDescriber(
     },
     get processing(): Processing | null {
       return processing;
+    },
+    get preferences(): Preferences {
+      return { compute: computePreference };
+    },
+    get machine(): Machine {
+      const probe = currentMachine();
+      return {
+        devices: probe.devices,
+        stack: probe.stack,
+        latch,
+        gpuReady: gpuReady(probe),
+      };
+    },
+    get nextJob(): NextJob {
+      const probe = currentMachine();
+      return {
+        compute: jobCompute(computePreference, probe, latch),
+        whyCpu: whyCpu(computePreference, probe, latch),
+      };
+    },
+    async setComputePreference(compute: ComputePreference): Promise<void> {
+      const wasCpu = computePreference === "CPU";
+      computePreference = compute;
+      if (compute === "GPU" && wasCpu) {
+        latch = false;
+      }
+      await persistPreferences(configDir, computePreference);
     },
     cancelProcessing(): void {
       activeImport?.abort();
