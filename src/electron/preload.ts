@@ -1,10 +1,14 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   Citation,
+  ComputePreference,
   Language,
   Library,
+  Machine,
+  NextJob,
   Playback,
   PlaybackRate,
+  Preferences,
   Processing,
   Project,
   Speaker,
@@ -29,6 +33,12 @@ export type OpenedView = {
 
 export type InsertedWordView = OpenedView & {
   readonly inserted: Word;
+};
+
+export type PreferencesView = {
+  readonly preferences: Preferences;
+  readonly machine: Machine;
+  readonly nextJob: NextJob;
 };
 
 contextBridge.exposeInMainWorld("describer", {
@@ -131,4 +141,10 @@ contextBridge.exposeInMainWorld("describer", {
     ipcRenderer.invoke("describer:searchLibrary", query),
   findInTranscript: (query: string): Promise<readonly Word[]> =>
     ipcRenderer.invoke("describer:findInTranscript", query),
+  preferences: (): Promise<PreferencesView> =>
+    ipcRenderer.invoke("describer:preferences"),
+  setComputePreference: (
+    compute: ComputePreference,
+  ): Promise<PreferencesView> =>
+    ipcRenderer.invoke("describer:setComputePreference", compute),
 });

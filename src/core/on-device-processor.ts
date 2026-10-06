@@ -514,7 +514,12 @@ async function transcribeAndDiarize(
 
 export function onDeviceProcessor(): Processor {
   return {
-    async process(sourcePath, language, controls?: ProcessorControls) {
+    async process(
+      sourcePath,
+      language,
+      _compute,
+      controls?: ProcessorControls,
+    ) {
       const signal = controls?.signal ?? new AbortController().signal;
       const onProgress = controls?.onProgress ?? (() => {});
       throwIfAborted(signal);

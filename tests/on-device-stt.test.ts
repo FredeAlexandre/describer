@@ -64,7 +64,7 @@ test("processing a Source produces timed Words in the Transcript", async () => {
 test("Words use the language chosen at import", async () => {
   await withSource(async ({ libraryDir, sourcePath }) => {
     const processor: Processor = {
-      async process(_sourcePath, language, controls) {
+      async process(_sourcePath, language, _compute, controls) {
         controls?.onProgress(1);
         const words =
           language === "French"
@@ -87,7 +87,7 @@ test("progress is visible while processing runs", async () => {
     let reportProgress: ((progress: number) => void) | undefined;
     let finish: ((result: ProcessorResult) => void) | undefined;
     const processor: Processor = {
-      process(_sourcePath, _language, controls) {
+      process(_sourcePath, _language, _compute, controls) {
         reportProgress = controls?.onProgress;
         return new Promise((resolve) => {
           finish = resolve;
@@ -116,7 +116,7 @@ test("progress is visible while processing runs", async () => {
 test("cancelling processing leaves no Project and does not touch the Source", async () => {
   await withSource(async ({ libraryDir, sourcePath }) => {
     const processor: Processor = {
-      process(_sourcePath, _language, controls) {
+      process(_sourcePath, _language, _compute, controls) {
         return new Promise((_, reject) => {
           const fail = () => {
             reject(new Error("Processing cancelled"));

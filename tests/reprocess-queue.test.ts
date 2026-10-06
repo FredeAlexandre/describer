@@ -63,10 +63,10 @@ test("confirmed re-process replaces the Transcript and leaves the Source unchang
     const describer = await openDescriber({
       libraryDir,
       processor: {
-        process: async (src, language, controls) => {
+        process: async (src, language, compute, controls) => {
           pass += 1;
           const words = pass === 1 ? [hello] : [bonjour];
-          return fixtureProcessor(words).process(src, language, controls);
+          return fixtureProcessor(words).process(src, language, compute, controls);
         },
       },
     });
@@ -112,10 +112,10 @@ test("re-process is not on the undo stack", async () => {
     const describer = await openDescriber({
       libraryDir,
       processor: {
-        process: async (src, language, controls) => {
+        process: async (src, language, compute, controls) => {
           pass += 1;
           const words = pass === 1 ? [hello] : [bonjour];
-          return fixtureProcessor(words).process(src, language, controls);
+          return fixtureProcessor(words).process(src, language, compute, controls);
         },
       },
     });
@@ -144,12 +144,12 @@ test("importing multiple Sources queues them so only one process runs at a time"
     const describer = await openDescriber({
       libraryDir,
       processor: {
-        async process(src, language, controls) {
+        async process(src, language, compute, controls) {
           running += 1;
           maxRunning = Math.max(maxRunning, running);
           await new Promise((resolve) => setTimeout(resolve, 30));
           running -= 1;
-          return fixtureProcessor([]).process(src, language, controls);
+          return fixtureProcessor([]).process(src, language, compute, controls);
         },
       },
     });
@@ -173,12 +173,12 @@ test("each queued Project is uneditable until its own process finishes", async (
     const describer = await openDescriber({
       libraryDir,
       processor: {
-        process(src, language, controls) {
+        process(src, language, compute, controls) {
           const words = src === sourcePath ? firstWords : secondWords;
           return new Promise((resolve) => {
             gates.set(src, () => {
               void resolve(
-                fixtureProcessor(words).process(src, language, controls),
+                fixtureProcessor(words).process(src, language, compute, controls),
               );
             });
           });
@@ -242,15 +242,15 @@ test("re-process locks the Transcript until the new pass finishes", async () => 
     const describer = await openDescriber({
       libraryDir,
       processor: {
-        process(src, language, controls) {
+        process(src, language, compute, controls) {
           pass += 1;
           if (pass === 1) {
-            return fixtureProcessor([hello]).process(src, language, controls);
+            return fixtureProcessor([hello]).process(src, language, compute, controls);
           }
           return new Promise((resolve) => {
             releaseSecond = () => {
               void resolve(
-                fixtureProcessor([bonjour]).process(src, language, controls),
+                fixtureProcessor([bonjour]).process(src, language, compute, controls),
               );
             };
           });
@@ -283,7 +283,7 @@ test("cancel drops in-flight imports including those still queued", async () => 
     const describer = await openDescriber({
       libraryDir,
       processor: {
-        process(src, _language, controls) {
+        process(src, _language, _compute, controls) {
           if (src === secondPath) {
             startedSecond = true;
           }
@@ -310,10 +310,10 @@ test("cancel aborts a running re-process and leaves the existing Transcript", as
     const describer = await openDescriber({
       libraryDir,
       processor: {
-        process(src, language, controls) {
+        process(src, language, compute, controls) {
           pass += 1;
           if (pass === 1) {
-            return fixtureProcessor([hello]).process(src, language, controls);
+            return fixtureProcessor([hello]).process(src, language, compute, controls);
           }
           return hangUntilCancelled(controls);
         },
@@ -342,9 +342,9 @@ test("cancel drops a queued re-process and leaves the existing Transcript", asyn
     const describer = await openDescriber({
       libraryDir,
       processor: {
-        process(src, language, controls) {
+        process(src, language, compute, controls) {
           if (!hang) {
-            return fixtureProcessor([hello]).process(src, language, controls);
+            return fixtureProcessor([hello]).process(src, language, compute, controls);
           }
           if (src === sourcePath) {
             reprocessStarted = true;
